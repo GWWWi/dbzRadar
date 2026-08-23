@@ -1,0 +1,56 @@
+[
+  {
+    "file": "Z_OTHE_RADAMOSAIC_20220412000000.bin",
+    "binFile": "Z_OTHE_RADAMOSAIC_20220412000000.bin",
+    "time": "2022-04-12T00:00:00",
+    "stationId": "RADAMOSAIC",
+    "stationName": "SWAN雷达拼图",
+    "hasData": true,
+    "format": "mosaic"
+  },
+  {
+    "file": "Z_RADR_I_Z9536_20220601120415_O_DOR_SA_CAP_FMT.bin.bz2",
+    "binFile": "Z_RADR_I_Z9536_20220601120415_O_DOR_SA_CAP_FMT.bin.bin",
+    "time": "2022-06-01T12:04:15",
+    "stationId": "Z9536",
+    "stationName": "Z9536",
+    "hasData": false,
+    "format": "rstm"
+  },
+  {
+    "file": "Z_RADR_I_Z9543_20220619000043_O_DOR_SA_CAP_FMT.bin.bz2",
+    "binFile": "Z_RADR_I_Z9543_20220619000043_O_DOR_SA_CAP_FMT.bin.bin",
+    "time": "2022-06-19T00:00:43",
+    "stationId": "Z9543",
+    "stationName": "BinZhou_Z9543",
+    "hasData": true,
+    "format": "rstm"
+  },
+  {
+    "file": "Z_RADR_I_Z9543_20230530000146_O_DOR_SA_CAP_FMT.bin.bz2",
+    "binFile": "Z_RADR_I_Z9543_20230530000146_O_DOR_SA_CAP_FMT.bin.bin",
+    "time": "2023-05-30T00:01:46",
+    "stationId": "Z9543",
+    "stationName": "Z9543",
+    "hasData": false,
+    "format": "rstm"
+  },
+  {
+    "file": "Z_RADR_I_Z9543_20230530000747_O_DOR_SA_CAP_FMT.bin.bz2",
+    "binFile": "Z_RADR_I_Z9543_20230530000747_O_DOR_SA_CAP_FMT.bin.bin",
+    "time": "2023-05-30T00:07:47",
+    "stationId": "Z9543",
+    "stationName": "Z9543",
+    "hasData": false,
+    "format": "rstm"
+  },
+  {
+    "file": "REFE_COMPOSITE_20240621080000.m4",
+    "binFile": "REFE_COMPOSITE_20240621080000.m4",
+    "time": "2024-06-21T08:00:00",
+    "stationId": "MICAPS_M4",
+    "stationName": "MICAPS格点(示例)",
+    "hasData": true,
+    "format": "m4"
+  }
+]

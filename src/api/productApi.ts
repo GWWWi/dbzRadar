@@ -4,33 +4,99 @@
  * ────────────────────────────────────────────────────────────────────────
  * 接口约定：
  *   fetchProductList(): Promise<RadarProduct[]>
- *     返回平台支持的雷达产品目录（以反射率为首）。
+ *     优先从服务器获取产品目录 JSON（地址可用 setProductUrl 指向服务器
+ *     任意目录，相对路径或跨域绝对 URL 均可）；获取失败或格式非法时
+ *     回退到前端内置静态目录（src/config/products.ts），保证应用可用。
  *
- * 当前实现：前端静态目录（src/config/products.ts）。
- * 如后续接入真实后端，只需把本函数实现改为 fetch('/api/products')
- * 并把响应映射为 RadarProduct[] 即可，调用方（store / 组件）无需任何改动。
+ *   findProduct(id): RadarProduct | undefined
+ *     先在最近一次成功加载的服务器目录中查找，再回退静态目录。
+ *
+ * 服务器产品文件格式（JSON 数组，字段与 RadarProduct 对应）：
+ *   [
+ *     { "id": "Z", "name": "基本反射率", "unit": "dBZ", "type": "obs",
+ *       "colorStops": [ { "value": -100, "stop": [0,0,0,0] }, ... ] }
+ *   ]
+ *   约定：type 为实况 obs / 预报 fcst（缺省按 obs）；colorStops 按 value
+ *   升序，首档必须是低 value + alpha=0 的透明兜底档。
  * ────────────────────────────────────────────────────────────────────────
  */
 
-import type { RadarProduct } from '../types';
-import { getProductList as getStaticProducts } from '../config/products';
+import type { ColorStop, RadarProduct } from '../types';
+import {
+  getProductList as getStaticProducts,
+  getProductById as getStaticProductById
+} from '../config/products';
+
+/** 服务器产品目录地址（默认站点 /data/products.json，可用 setProductUrl 改指向） */
+let productUrl = 'data/products.json';
+
+/** 最近一次成功加载的产品目录缓存（供 findProduct 同步查找） */
+let loadedProducts: RadarProduct[] | null = null;
+
+/**
+ * 设置服务器产品目录地址（相对站点根的路径或任意服务器的绝对 URL）。
+ * 切换地址后会清空已加载缓存，下次 fetchProductList 重新拉取。
+ */
+export function setProductUrl(url: string): void {
+  productUrl = url;
+  loadedProducts = null;
+}
+
+/**
+ * 校验并规整服务器返回的单个产品项；字段缺失或类型非法时返回 null。
+ * stop 各分量强制转数字，非有限数视为非法。
+ */
+function normalizeProduct(raw: unknown): RadarProduct | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const r = raw as Record<string, unknown>;
+  if (typeof r.id !== 'string' || !r.id) return null;
+  if (!Array.isArray(r.colorStops) || r.colorStops.length === 0) return null;
+  const colorStops: ColorStop[] = [];
+  for (const s of r.colorStops) {
+    if (!s || typeof s !== 'object') return null;
+    const { value, stop } = s as Record<string, unknown>;
+    if (typeof value !== 'number' || !Array.isArray(stop) || stop.length !== 4) return null;
+    const rgba = stop.map(Number);
+    if (rgba.some((c) => !Number.isFinite(c))) return null;
+    colorStops.push({ value, stop: [rgba[0], rgba[1], rgba[2], rgba[3]] });
+  }
+  return {
+    id: r.id,
+    name: typeof r.name === 'string' ? r.name : r.id,
+    unit: typeof r.unit === 'string' ? r.unit : '',
+    type: r.type === 'fcst' ? 'fcst' : 'obs', // 缺省/非法值按实况产品处理
+    colorStops
+  };
+}
 
 /**
  * 获取产品列表。
+ * 流程：fetch 服务器 JSON → 逐项校验规整 → 缓存并返回；
+ * 任一环节失败（404/网络/格式非法）→ 回退内置静态目录（console.warn 提示）。
  * @returns 产品目录（Promise 包装，保持与后端版本一致的异步签名）
  */
 export async function fetchProductList(): Promise<RadarProduct[]> {
-  // TODO(后端接入示例)：
-  //   const resp = await fetch('/api/radar/products');
-  //   if (!resp.ok) throw new Error('获取产品列表失败：HTTP ' + resp.status);
-  //   return await resp.json();
-  return getStaticProducts();
+  try {
+    const resp = await fetch(productUrl);
+    if (!resp.ok) throw new Error('HTTP ' + resp.status);
+    const raw = (await resp.json()) as unknown;
+    if (!Array.isArray(raw)) throw new Error('产品目录必须是 JSON 数组');
+    const list = raw.map(normalizeProduct);
+    if (list.some((p) => p === null)) throw new Error('产品目录存在非法项（缺 id/colorStops 或色标格式错误）');
+    loadedProducts = list as RadarProduct[];
+    return loadedProducts;
+  } catch (e) {
+    console.warn('[productApi] 服务器产品目录(' + productUrl + ')加载失败，回退内置静态目录：', e);
+    loadedProducts = null;
+    return getStaticProducts();
+  }
 }
 
 /**
  * 按产品代码查找产品元信息（同步便捷方法）。
+ * 先查最近一次服务器加载的目录，未加载/未命中时回退静态目录。
  * @param id 产品代码，如 'Z'
  */
 export function findProduct(id: string): RadarProduct | undefined {
-  return getStaticProducts().find((p) => p.id === id);
+  return loadedProducts?.find((p) => p.id === id) ?? getStaticProductById(id);
 }

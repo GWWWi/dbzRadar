@@ -2,7 +2,7 @@
   ProductList.vue —— 左侧产品列表
 
   功能：
-    - 展示平台支持的产品目录（以反射率为首）；
+    - 展示平台支持的产品目录（以反射率为首），标注实况/预报类型；
     - 点击产品 → 分配给【当前激活屏】，实现“不同屏显示不同产品”的对比；
     - 高亮激活屏当前使用的产品；每屏卡片上标注其产品与时间。
 -->
@@ -46,6 +46,9 @@ function fmt(t: string): string {
           "
         >
           <span class="product-name">{{ p.name }}</span>
+          <span class="product-type" :class="{ 'type-fcst': p.type === 'fcst' }">
+            {{ p.type === 'fcst' ? '预报' : '实况' }}
+          </span>
           <span class="product-unit">{{ p.unit }}</span>
         </button>
       </li>

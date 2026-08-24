@@ -56,18 +56,21 @@ export const PRODUCTS: RadarProduct[] = [
     id: 'Z',
     name: '基本反射率',
     unit: 'dBZ',
+    type: 'obs',
     colorStops: reflectivityColorStops()
   },
   {
     id: 'CR',
     name: '组合反射率',
     unit: 'dBZ',
+    type: 'obs',
     colorStops: reflectivityColorStops()
   },
   {
     id: 'ETV',
     name: '回波顶高',
     unit: 'km',
+    type: 'obs',
     colorStops: [
       { value: -100, stop: [0, 0, 0, 0] },   // 兜底透明档（同反射率说明）
       { value: 3,  stop: [166, 242, 143, 255] },
@@ -82,6 +85,7 @@ export const PRODUCTS: RadarProduct[] = [
     id: 'V',
     name: '径向速度',
     unit: 'm/s',
+    type: 'obs',
     colorStops: [
       { value: -1000, stop: [0, 0, 0, 0] },       // 兜底透明档：< -30 m/s 不着色
       { value: -30, stop: [0, 0, 255, 255] },     // 负速度（远离雷达，蓝系）

@@ -23,6 +23,13 @@ export interface ColorStop {
 }
 
 /**
+ * 产品资料类型：
+ *   - obs ：实况产品（观测/反演实况资料，当前平台产品均属此类）
+ *   - fcst：预报产品（模式/外推预报，时间轴用起报时间+时效）
+ */
+export type RadarProductType = 'obs' | 'fcst';
+
+/**
  * 雷达产品元信息（产品列表中的一项）。
  * 产品决定了渲染配色（colorStops）与数值单位。
  */
@@ -33,6 +40,8 @@ export interface RadarProduct {
   name: string;
   /** 单位，如 'dBZ' / 'km' / 'm/s' */
   unit: string;
+  /** 资料类型：实况 obs / 预报 fcst（服务器配置缺省时按实况 obs 处理） */
+  type: RadarProductType;
   /** 色标（颜色停止点序列），供渲染层构造 QuickEarth fillColor 规则 */
   colorStops: ColorStop[];
 }
@@ -44,6 +53,36 @@ export interface RadarProduct {
  *   - 'm4'    ：MICAPS 第 4 类格点文本文件（*.m4）
  */
 export type RadarFileFormat = 'mosaic' | 'rstm' | 'm4';
+
+/**
+ * 时间轴生成配置（来自服务器 config.json 的 timeline 字段）。
+ * 时间轴不依赖实际文件，按规则提前生成；某时次无文件时由 UI 提示。
+ */
+export interface TimelineConfig {
+  /** 模式：obs=实况（now 为结束时间往前推）；fcst=预报（now 起加时效） */
+  mode: 'obs' | 'fcst';
+  /** 时间轴间隔，以分钟为基准单位 */
+  intervalMinutes: number;
+  /** 实况模式：往前推的天数（默认 10 天） */
+  lookbackDays: number;
+  /** 预报模式：当前时间加上的时效（小时） */
+  forecastHours: number;
+}
+
+/**
+ * 应用配置（服务器 config.json 的结构）。
+ * 文件路径获取方式二选一：
+ *   - fileUrlTemplate ：按时间模板直接构造文件地址（优先）
+ *   - fileListUrl     ：清单地址，按时间在清单中精确匹配
+ */
+export interface AppConfig {
+  /** 时间轴生成规则 */
+  timeline: TimelineConfig;
+  /** 数据文件地址模板，{time} 占位符替换为 yyyyMMddHHmmss；空串表示用清单模式 */
+  fileUrlTemplate: string;
+  /** 文件清单地址（清单模式使用） */
+  fileListUrl: string;
+}
 
 /**
  * 雷达文件清单项（对应 public/data/manifest.json 中的一条记录）。

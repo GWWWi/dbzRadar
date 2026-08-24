@@ -18,9 +18,13 @@
  *      二进制，不在浏览器内做 bz2 解压（compressjs 与打包器互操作差，
  *      会因 amdefine 在浏览器环境崩溃导致白屏）。
  *
- * 后端接入说明：当前实现从静态目录 public/data 取数；若后续接入真实服务，
- * 只需替换这两个函数内部的 fetch 地址（如 '/api/radar/files'、'/api/radar/file?id=xx'），
- * 上层组件无需改动。
+ * 文件路径两种获取方式（见 configApi）：
+ *   - 模板模式：buildFileMetaFromTemplate 按配置模板 + 时刻直接构造地址；
+ *     404 时抛 RadarFileMissingError，UI 提示“该时次无文件”。
+ *   - 清单模式：fetchRadarFileList(配置地址) 拉清单，按时间精确匹配。
+ *
+ * 后端接入说明：清单地址/模板地址均可指向服务器任意目录（相对路径或
+ * 绝对 URL），上层组件无需改动。
  * ────────────────────────────────────────────────────────────────────────
  */
 
@@ -30,14 +34,51 @@ import { parseRADAMOSAIC, isRADAMOSAIC } from '../parse/mosaicParser';
 import { isMicapsM4, parseMicapsM4 } from '../parse/micapsM4Parser';
 import { findProduct } from './productApi';
 
+/** 数据文件不存在（HTTP 404）专用错误：UI 据此提示“该时次无文件”而非“加载失败” */
+export class RadarFileMissingError extends Error {
+  constructor(url: string) {
+    super('数据文件不存在：' + url);
+    this.name = 'RadarFileMissingError';
+  }
+}
+
 /**
- * 获取雷达文件清单。
+ * 把相对文件名解析为可 fetch 的地址：
+ *   - 含 / 或 ://（模板构造的路径、绝对 URL）→ 原样使用
+ *   - 纯文件名（清单模式）→ 相对 data/ 目录
+ */
+function resolveDataUrl(binFile: string): string {
+  return /[/]|:\/\//.test(binFile) ? binFile : 'data/' + binFile;
+}
+
+/**
+ * 按地址模板构造某时刻的文件清单项（模板模式，无清单时使用）。
+ * @param template 地址模板，{time} 占位符替换为 yyyyMMddHHmmss（如 data/files/{time}.bin）
+ * @param time     ISO 时刻串 'yyyy-MM-ddTHH:mm:ss'
+ */
+export function buildFileMetaFromTemplate(template: string, time: string): RadarFileMeta {
+  const compact = time.replace(/[-:]/g, '').replace('T', '');
+  const binFile = template.replace('{time}', compact);
+  return {
+    file: binFile,
+    binFile,
+    time,
+    stationId: '',
+    stationName: '',
+    hasData: true,
+    format: 'rstm' // 实际格式由 fetchRadarGrid 的魔数检测兜底纠正
+  };
+}
+
+/**
+ * 获取雷达文件清单（清单模式）。
+ * @param url 清单地址（默认 data/manifest.json，可传入配置指定的任意地址）
  * @returns RadarFileMeta[] 清单数组（已按观测时刻升序）
  */
-export async function fetchRadarFileList(): Promise<RadarFileMeta[]> {
-  const resp = await fetch('data/manifest.json');
+export async function fetchRadarFileList(url = 'data/manifest.json'): Promise<RadarFileMeta[]> {
+  const resp = await fetch(url);
   if (!resp.ok) {
-    throw new Error('加载 manifest.json 失败：HTTP ' + resp.status);
+    throw new Error('加载清单 ' + url + ' 失败：HTTP ' + resp.status);
   }
   const list = (await resp.json()) as RadarFileMeta[];
   // 双保险：确保按时间升序（时间轴顺序依赖）
@@ -73,8 +114,12 @@ export async function fetchRadarGrid(
   // 产品元信息：用于合成兜底的峰值/单位标注
   const product = findProduct(productId);
 
-  // —— 1) 拉取文件二进制（相对 public/data 目录，均为解压后的 .bin/.m4） ——
-  const resp = await fetch('data/' + meta.binFile);
+  // —— 1) 拉取文件二进制（清单模式为 data/ 下文件名；模板模式为构造出的完整地址） ——
+  const url = resolveDataUrl(meta.binFile);
+  const resp = await fetch(url);
+  if (resp.status === 404) {
+    throw new RadarFileMissingError(url);
+  }
   if (!resp.ok) {
     throw new Error('加载 ' + meta.binFile + ' 失败：HTTP ' + resp.status);
   }

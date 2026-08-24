@@ -165,6 +165,21 @@ button {
   color: #8fa3ba;
 }
 
+/* 产品类型标签：实况（绿）/ 预报（橙） */
+.product-type {
+  flex-shrink: 0;
+  font-size: 10px;
+  padding: 1px 4px;
+  border-radius: 3px;
+  background: #1d4d34;
+  color: #7fd6a4;
+}
+
+.product-type.type-fcst {
+  background: #4d3a1d;
+  color: #e0b07f;
+}
+
 .item-active .product-unit {
   color: #cfe6ff;
 }
@@ -300,6 +315,23 @@ button {
   margin-left: auto;
 }
 
+/* 屏头平滑开关（每屏独立） */
+.screen-smooth {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 11px;
+  color: #8fa3ba;
+  cursor: pointer;
+  user-select: none;
+  margin-left: 6px;
+  white-space: nowrap;
+}
+
+.screen-smooth input {
+  cursor: pointer;
+}
+
 /* 地图容器必须显式占满剩余高度，Leaflet 才能正确量算 */
 .map {
   flex: 1;
@@ -313,6 +345,25 @@ button {
   color: #d8e2ee;
 }
 
+/* ───────────── 点击取值弹窗（深色主题） ───────────── */
+.value-popup .leaflet-popup-content-wrapper {
+  background: rgba(16, 22, 31, 0.9);
+  color: #7fd0ff;
+  border: 1px solid #33445c;
+  border-radius: 4px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
+}
+
+.value-popup .leaflet-popup-content {
+  margin: 4px 8px;
+  font-family: Consolas, monospace;
+  font-size: 12px;
+}
+
+.value-popup .leaflet-popup-tip {
+  background: rgba(16, 22, 31, 0.9);
+}
+
 /* ───────────── 底部时间轴 ───────────── */
 .timeline {
   display: flex;
@@ -324,10 +375,15 @@ button {
   z-index: 1200;
 }
 
-.timeline-range {
-  flex: 1;
-  accent-color: #1976d2;
+/* Canvas 刻度轴（TimeAxis）：占满剩余宽度，禁止触屏手势冲突 */
+.time-axis {
+  flex: 1 1 0;
+  min-width: 80px;
+  height: 60px;
   cursor: pointer;
+  border-radius: 4px;
+  touch-action: none;
+  user-select: none;
 }
 
 .timeline-time {
@@ -340,5 +396,36 @@ button {
 
 .timeline-count {
   color: #8fa3ba;
+  font-size: 12px;
+}
+
+/* 时间选择控件（配置模式：选预报起报时间 / 实况结束时间） */
+.timeline-pick-label {
+  color: #8fa3ba;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.timeline-dt {
+  padding: 3px 6px;
+  background: #223047;
+  border: 1px solid #35455c;
+  border-radius: 4px;
+  color: #d8e2ee;
+  color-scheme: dark; /* 原生日历/时钟弹层跟随深色主题 */
+  font-family: inherit;
+  font-size: 12px;
+}
+
+/* 时间选择框：下拉快速跳转时次（显示 YYYY-MM-DD HH:mm，值 YYYYMMDDHHmm） */
+.timeline-select {
+  max-width: 150px;
+  padding: 3px 4px;
+  background: #223047;
+  border: 1px solid #35455c;
+  border-radius: 4px;
+  color: #d8e2ee;
+  color-scheme: dark;
+  font-family: inherit;
   font-size: 12px;
 }

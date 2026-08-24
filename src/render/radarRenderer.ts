@@ -12,10 +12,15 @@
  *   6) new LPixelLayer() + setDrawOptions + setDataSource → map.addLayer
  *
  * ★ 渲染模式说明（重要）★
- *   反射率色斑图使用 GridDataGLFillMode.bitmap【格点填色】模式：
- *     - 每个格点按其数值落入的分级直接取该档颜色平铺；
- *     - 不做双线性插值 / 样条插值（pixel1/pixel2/shaded 等模式才会平滑），
- *       即“不需要平滑”，保持雷达产品原始的分级色块观感。
+ *   支持两种填色模式（每屏独立开关 screens[i].smooth，屏头可切换）：
+ *     - 不平滑 GridDataGLFillMode.bitmap【格点填色】：
+ *       每个格点按其数值落入的分级直接取该档颜色平铺，不做任何插值，
+ *       保持雷达产品原始的分级色块观感（默认）。
+ *     - 平滑 GridDataGLFillMode.pixel1【双线性插值】：
+ *       先对格点值做双线性插值，再经同一套分级色例取色，
+ *       色块边界过渡平滑（经典平滑色斑图观感）。
+ *   两种模式共用同一套色标与缺测处理；运行中切换走 updateRadarSmooth
+ *   局部刷新（setDrawOptions），不重建图层。
  *
  * ★ “蓝色底色”问题与修复（重要经验）★
  *   SWAN 拼图中无回波区域被编码为原始码 0，解码后为 -33 dBZ 的【有效值】
@@ -80,12 +85,15 @@ function maskBelowThreshold(data: number[], undef: number, threshold: number): v
 }
 
 /**
- * 构造完整的绘制选项：分级规则 + bitmap 色例 + 格点填色模式。
+ * 构造完整的绘制选项：分级规则 + bitmap 色例 + 填色模式。
  *
  * colorScale 由与 fillColor 相同的分级规则生成（createFromStopRules），
- * gradient=false 表示分级平色（不平滑），是 bitmap 模式的正规配置。
+ * gradient=false 表示分级平色（不平滑），是 bitmap/pixel1 模式的正规配置。
+ *
+ * @param product 产品（决定分级配色）
+ * @param smooth  true=双线性插值（平滑），false=格点填色（不平滑）
  */
-function buildDrawOptions(product: RadarProduct): Record<string, unknown> {
+function buildDrawOptions(product: RadarProduct, smooth: boolean): Record<string, unknown> {
   const rule = buildColorRule(product);
   // 位图色例纹理宽度取档位数×16，保证每个色带有足够的采样精度
   const width = product.colorStops.length * 16;
@@ -99,20 +107,26 @@ function buildDrawOptions(product: RadarProduct): Record<string, unknown> {
   return {
     fillColor: rule,
     colorScale,
-    fillMode: GridDataGLFillMode.bitmap, // ★ 格点填色：逐格平铺分档颜色
+    fillMode: smooth ? GridDataGLFillMode.pixel1 : GridDataGLFillMode.bitmap,
     optimizedInterp: false               // 关闭插值优化，避免缺测边界出现过渡色
   };
 }
 
 /**
- * 核心：把一个雷达网格渲染为地图上的像素图层（不平滑的分档色斑图）。
+ * 核心：把一个雷达网格渲染为地图上的像素图层。
  *
  * @param map     QEL.LMap 地图实例
  * @param grid    解析得到的笛卡尔网格（本函数会就地过滤其中的弱值）
  * @param product 当前产品（决定分级配色与显示阈值）
+ * @param smooth  true=双线性插值（平滑），false=格点填色（不平滑，默认）
  * @returns LPixelLayer 图层实例（供后续更新/移除）
  */
-export function renderRadar(map: LMap, grid: RadarGrid, product: RadarProduct): LPixelLayer {
+export function renderRadar(
+  map: LMap,
+  grid: RadarGrid,
+  product: RadarProduct,
+  smooth = false
+): LPixelLayer {
   // —— 1) 弱值过滤：低于首档可见阈值的值 → 缺测（解决“蓝色底色”） ——
   const threshold = firstVisibleThreshold(product);
   maskBelowThreshold(grid.data, grid.undef, threshold);
@@ -148,9 +162,9 @@ export function renderRadar(map: LMap, grid: RadarGrid, product: RadarProduct): 
   // —— 4) 内存数据源：[[gd]] 表示单时次、单字段的格点场 ——
   const provider: IGridDataProvider = new MemoryGridDataProvider([[gd]], { gridOptions });
 
-  // —— 5)+6) 创建像素图层（含分级规则 + bitmap 色例）并加入地图 ——
+  // —— 5)+6) 创建像素图层（含分级规则 + 色例）并加入地图 ——
   const layer = new LPixelLayer();
-  layer.setDrawOptions(buildDrawOptions(product) as never);
+  layer.setDrawOptions(buildDrawOptions(product, smooth) as never);
   layer.setDataSource(provider);
   (map as unknown as { addLayer(l: unknown): void }).addLayer(layer);
 
@@ -166,14 +180,40 @@ export function updateRadarProduct(
   layer: LPixelLayer,
   grid: RadarGrid,
   oldThreshold: number,
-  product: RadarProduct
+  product: RadarProduct,
+  smooth = false
 ): void {
   const newThreshold = firstVisibleThreshold(product);
   // 新阈值高于旧阈值时，需要把新落入“弱值”区间的格点补标记为缺测
   if (newThreshold > oldThreshold) {
     maskBelowThreshold(grid.data, grid.undef, newThreshold);
   }
-  layer.setDrawOptions(buildDrawOptions(product) as never);
+  layer.setDrawOptions(buildDrawOptions(product, smooth) as never);
+}
+
+/**
+ * 局部切换平滑/不平滑（数据与产品均不变，仅刷新填色模式）。
+ * smooth=true → pixel1 双线性插值（平滑）；false → bitmap 格点填色（不平滑）。
+ */
+export function updateRadarSmooth(
+  layer: LPixelLayer,
+  product: RadarProduct,
+  smooth: boolean
+): void {
+  layer.setDrawOptions(buildDrawOptions(product, smooth) as never);
+}
+
+/**
+ * 查询网格中某经纬度点的数值（最近邻格点取值）。
+ * 超出网格范围、缺测或非有限数时返回 null。
+ * 渲染前的弱值已在 grid.data 中就地置为缺测，因此本函数天然与显示一致。
+ */
+export function sampleGridValue(grid: RadarGrid, lat: number, lon: number): number | null {
+  const col = Math.round((lon - grid.xStart) / grid.xDelta);
+  const row = Math.round((lat - grid.yStart) / grid.yDelta);
+  if (col < 0 || col >= grid.xSize || row < 0 || row >= grid.ySize) return null;
+  const v = grid.data[row * grid.xSize + col];
+  return v === grid.undef || !Number.isFinite(v) ? null : v;
 }
 
 /**

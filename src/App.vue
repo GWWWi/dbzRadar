@@ -26,23 +26,34 @@ import {
   timelineTimes,
   setScreenTime,
   setProducts,
-  setFiles
+  setFiles,
+  setTimeline,
+  setTimelineConfig
 } from './store/appStore';
 import { fetchProductList } from './api/productApi';
 import { fetchRadarFileList } from './api/radarApi';
+import { fetchAppConfig, buildTimelineTimes } from './api/configApi';
 
 /** 网格布局 class：决定多屏排列方式 */
 const gridClass = () => `grid-${appState.layout}`;
 
-/* —— 应用启动：并行拉取产品目录与雷达文件清单 —— */
+/* —— 应用启动：拉取产品目录；配置模式生成时间轴，无配置回退清单模式 —— */
 onMounted(async () => {
   try {
-    const [products, files] = await Promise.all([
-      fetchProductList(),
-      fetchRadarFileList()
-    ]);
+    const [products, config] = await Promise.all([fetchProductList(), fetchAppConfig()]);
     setProducts(products);
-    setFiles(files); // 同时给各屏填入首个时次
+    if (config) {
+      // 配置模式：时间轴按规则提前生成（与文件无关）；
+      // 有模板 → 文件路径按时刻构造；无模板 → 仍用清单按时间匹配
+      setTimelineConfig(config);
+      setTimeline(buildTimelineTimes(config), config.fileUrlTemplate);
+      if (!config.fileUrlTemplate) {
+        setFiles(await fetchRadarFileList(config.fileListUrl));
+      }
+    } else {
+      // 回退：无配置文件 → 时间轴取自清单文件时刻（本地 demo 行为）
+      setFiles(await fetchRadarFileList());
+    }
   } catch (e) {
     console.error('[App] 初始化数据加载失败：', e);
   }

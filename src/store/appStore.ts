@@ -14,7 +14,7 @@
  */
 
 import { reactive, computed } from 'vue';
-import type { RadarFileMeta, RadarProduct } from '../types';
+import type { AppConfig, RadarFileMeta, RadarProduct } from '../types';
 
 /** 布局类型：1 / 2 / 4 / 6 屏 */
 export type LayoutType = 1 | 2 | 4 | 6;
@@ -29,6 +29,8 @@ export interface ScreenState {
   time: string;
   /** 加载状态文本（'加载中...' 等，空串表示空闲） */
   status: string;
+  /** 本屏色斑图平滑开关（每屏独立）：true=双线性插值，false=格点填色（原始色块） */
+  smooth: boolean;
 }
 
 /** 全局应用状态形状 */
@@ -36,10 +38,18 @@ export interface AppState {
   layout: LayoutType;
   products: RadarProduct[];
   files: RadarFileMeta[];
+  /** 配置生成的时间轴（配置模式）；空数组表示未启用，回退用 files 推导 */
+  timeline: string[];
+  /** 数据文件地址模板（配置模式）；空串表示清单模式（按 files 匹配） */
+  fileUrlTemplate: string;
+  /** 当前应用配置（配置模式）；null 表示清单回退模式（时间轴上无时间选择控件） */
+  timelineConfig: AppConfig | null;
   screens: ScreenState[];
   activeScreenId: number;
   playing: boolean;
   syncPlay: boolean;
+  /** 多屏地图联动开关：true=任一屏缩放/移动地图时，其余屏同步相同视野 */
+  syncMap: boolean;
 }
 
 /** 创建 n 个屏的初始配置 */
@@ -48,7 +58,8 @@ function createScreens(n: number): ScreenState[] {
     id: i,
     productId: 'Z', // 默认产品 = 基本反射率
     time: '',
-    status: ''
+    status: '',
+    smooth: false
   }));
 }
 
@@ -57,10 +68,14 @@ export const appState = reactive<AppState>({
   layout: 1,
   products: [],
   files: [],
+  timeline: [],
+  fileUrlTemplate: '',
+  timelineConfig: null,
   screens: createScreens(1),
   activeScreenId: 0,
   playing: false,
-  syncPlay: true
+  syncPlay: true,
+  syncMap: true
 });
 
 /* ─────────────────────────── mutations ─────────────────────────── */
@@ -72,10 +87,10 @@ export function setLayout(layout: LayoutType): void {
   appState.layout = layout;
   const cur = appState.screens;
   if (cur.length < layout) {
-    const base = cur[cur.length - 1] || { productId: 'Z', time: '', status: '' };
+    const base = cur[cur.length - 1] || { productId: 'Z', time: '', status: '', smooth: false };
     while (cur.length < layout) {
-      // 新增屏沿用上一屏的产品/时间作为初始值
-      cur.push({ id: cur.length, productId: base.productId, time: base.time, status: '' });
+      // 新增屏沿用上一屏的产品/时间/平滑开关作为初始值
+      cur.push({ id: cur.length, productId: base.productId, time: base.time, status: '', smooth: base.smooth });
     }
   } else if (cur.length > layout) {
     cur.splice(layout); // 截断多余屏（地图实例在组件卸载时销毁）
@@ -95,6 +110,15 @@ export function setScreenProduct(id: number, productId: string): void {
 }
 
 /**
+ * 为指定屏设置平滑显示开关（每屏独立，便于多屏对比平滑/不平滑效果）。
+ * true=双线性插值渲染（平滑），false=格点填色（不平滑，保持分档色块）。
+ */
+export function setScreenSmooth(id: number, smooth: boolean): void {
+  const s = appState.screens[id];
+  if (s) s.smooth = smooth;
+}
+
+/**
  * 为指定屏设置观测时刻。
  * 开启“多屏同步”（syncPlay）时广播给所有屏；否则仅本屏（时间对比模式）。
  */
@@ -108,7 +132,31 @@ export function setScreenTime(id: number, time: string): void {
   }
 }
 
-/** 载入文件清单，并给尚未有时次的屏填入首个时次 */
+/**
+ * 保存应用配置（配置模式标记，供时间轴的时间选择控件重新生成时读取）。
+ * null 表示清单回退模式。
+ */
+export function setTimelineConfig(config: AppConfig | null): void {
+  appState.timelineConfig = config;
+}
+
+/**
+ * 写入配置模式的时间轴与文件模板（configApi 生成后调用）。
+ * 时间轴与实际文件无关，提前确定；给尚未有时次的屏填入最新时次
+ * （实况模式为当前时间，预报模式为起报时间）。
+ * @param times 升序时刻串数组
+ * @param fileUrlTemplate 文件地址模板；空串表示清单模式
+ */
+export function setTimeline(times: string[], fileUrlTemplate: string): void {
+  appState.timeline = times;
+  appState.fileUrlTemplate = fileUrlTemplate;
+  if (times.length > 0 && !appState.screens[0].time) {
+    const latest = times[times.length - 1];
+    for (const s of appState.screens) s.time = latest;
+  }
+}
+
+/** 载入文件清单（清单模式），并给尚未有时次的屏填入首个时次 */
 export function setFiles(files: RadarFileMeta[]): void {
   appState.files = files;
   if (files.length > 0 && !appState.screens[0].time) {
@@ -129,6 +177,11 @@ export function setPlaying(p: boolean): void {
 /** 设置多屏同步开关 */
 export function setSyncPlay(v: boolean): void {
   appState.syncPlay = v;
+}
+
+/** 设置多屏地图联动开关（缩放/平移视野同步，行为见 mapManager.setMapLink） */
+export function setSyncMap(v: boolean): void {
+  appState.syncMap = v;
 }
 
 /** 更新某屏加载状态提示 */
@@ -155,8 +208,12 @@ export const activeScreen = computed<ScreenState>(
   () => appState.screens[appState.activeScreenId]
 );
 
-/** 当前时间轴上的全部时刻（去重升序） */
+/**
+ * 当前时间轴上的全部时刻（升序）：
+ * 优先用配置生成的时间轴（setTimeline 写入）；未配置时回退为清单内文件时刻。
+ */
 export const timelineTimes = computed<string[]>(() => {
+  if (appState.timeline.length > 0) return appState.timeline;
   const set = new Set<string>();
   for (const f of appState.files) if (f.time) set.add(f.time);
   return Array.from(set).sort();

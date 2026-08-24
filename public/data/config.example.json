@@ -1,0 +1,10 @@
+{
+  "fileUrlTemplate": "data/files/{time}.bin",
+  "fileListUrl": "data/manifest.json",
+  "timeline": {
+    "mode": "obs",
+    "intervalMinutes": 6,
+    "lookbackDays": 10,
+    "forecastHours": 24
+  }
+}

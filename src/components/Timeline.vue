@@ -4,16 +4,17 @@
   功能：
     - 依据时间轴时刻（配置模式生成 / 清单回退模式取文件时刻）渲染刻度轴；
     - TimeAxis（canvas 刻度轴）：拖拽平移 / 点击跳转 / 滚轮缩放，
-      吸附到最近时次；顶条绿色刻度标记“有文件”的时次；
-    - 配置模式下提供时间选择控件：
+      拖拽时视图自由平移、选中时次吸附最近可用时刻；顶条绿色刻度标记“有文件”的时次；
+    - 锚点时间选择（Element Plus el-date-picker，仅配置模式）：
         预报模式选“起报时间”（时间轴起点）、实况模式选“结束时间”（时间轴终点），
         改选后以该时刻为锚点重新生成时间轴并跳转；
-    - 时间选择框：下拉列出全部时次快速跳转
-      （显示格式 YYYY-MM-DD HH:mm，option 值 YYYYMMDDHHmm）；
+    - 时间选择控件（Element Plus el-date-picker）：跳转时次
+      （显示格式 YYYY-MM-DD HH:mm，值 YYYYMMDDHHmm，不吸附）；
     - 上一个 / 下一步按钮逐时次步进；播放由 App 的定时器驱动。
 -->
 <script setup lang="ts">
-import { computed } from 'vue';
+import { computed, ref, watch } from 'vue';
+import { ElDatePicker } from 'element-plus';
 import {
   appState,
   activeScreen,
@@ -47,37 +48,53 @@ const pickLabel = computed(() =>
   appState.timelineConfig?.timeline.mode === 'fcst' ? '起报时间' : '结束时间'
 );
 
-/** 控件当前值（datetime-local 格式 yyyy-MM-ddTHH:mm）：预报取首时次，实况取末时次 */
-const pickValue = computed(() => {
-  const times = timelineTimes.value;
-  if (!times.length) return '';
-  const anchor =
-    appState.timelineConfig?.timeline.mode === 'fcst' ? times[0] : times[times.length - 1];
-  return anchor.slice(0, 16);
-});
+/**
+ * 锚点时间控件绑定值（紧凑串 YYYYMMDDHHmm）。
+ * ★ 必须用 v-model（本地 ref）而非只读 :model-value：
+ *   受控单向绑定时面板内部状态会被 prop 重置，导致点击日期无响应。
+ *   预报取首时次（起报），实况取末时次（结束）。
+ */
+const anchorValue = ref('');
+watch(
+  [() => appState.timelineConfig?.timeline.mode, timelineTimes],
+  () => {
+    const times = timelineTimes.value;
+    if (!times.length) {
+      anchorValue.value = '';
+      return;
+    }
+    const anchor =
+      appState.timelineConfig?.timeline.mode === 'fcst' ? times[0] : times[times.length - 1];
+    anchorValue.value = anchor.replace(/[-:T]/g, '').slice(0, 12);
+  },
+  { immediate: true }
+);
 
 /** 时间格式化：'2022-06-19T00:00:43' → '06-19 00:00:43' */
 const fmt = (t?: string) => (t ? t.replace('T', ' ').slice(5, 19) : '--');
 
-/** 时间选择框选项：显示 YYYY-MM-DD HH:mm，value 为紧凑串 YYYYMMDDHHmm */
-const timeOptions = computed(() =>
-  timelineTimes.value.map((t) => ({
-    value: t.replace(/[-:T]/g, '').slice(0, 12),
-    label: t.replace('T', ' ').slice(0, 16)
-  }))
+/**
+ * 跳转时间控件绑定值（紧凑串 YYYYMMDDHHmm，随激活屏时刻同步）。
+ * 同样必须 v-model（原因同上）。
+ */
+const jumpValue = ref('');
+watch(
+  () => activeScreen.value?.time ?? '',
+  (t) => {
+    jumpValue.value = t ? t.replace(/[-:T]/g, '').slice(0, 12) : '';
+  },
+  { immediate: true }
 );
 
-/** 时间选择框当前值：激活屏时刻的紧凑串（不在时间轴上时为空串 → 框内空白） */
-const selectValue = computed(() =>
-  (activeScreen.value?.time ?? '').replace(/[-:T]/g, '').slice(0, 12)
-);
-
-/** 时间选择框跳转：value YYYYMMDDHHmm → 时间轴时刻（秒固定 00），syncPlay 时广播全屏 */
-function onSelectTime(e: Event): void {
-  const v = (e.target as HTMLSelectElement).value;
-  if (v.length !== 12) return;
+/**
+ * 时间选择控件跳转：value YYYYMMDDHHmm → ISO（秒固定 00）。
+ * 不做吸附：直接设置所选时刻，由 RadarScreen 查找对应文件，
+ * 不存在时提示“该时次无数据”。
+ */
+function onSelectTime(v: string): void {
+  if (!v || v.length !== 12) return;
   const iso = `${v.slice(0, 4)}-${v.slice(4, 6)}-${v.slice(6, 8)}T${v.slice(8, 10)}:${v.slice(10, 12)}:00`;
-  if (timelineTimes.value.includes(iso)) setScreenTime(appState.activeScreenId, iso);
+  setScreenTime(appState.activeScreenId, iso);
 }
 
 /** 步进：delta = ±1 */
@@ -88,17 +105,16 @@ function step(delta: number): void {
 }
 
 /**
- * 选择起报/结束时间：以所选时刻为锚点重新生成时间轴，
+ * 选择起报/结束时间（Element Plus 日期时间控件，value-format 为
+ * YYYYMMDDHHmm）：以所选时刻为锚点重新生成时间轴，
  * 并把屏跳到锚点时次（syncPlay 开启时广播全部屏）。
  */
-function onPickAnchor(e: Event): void {
+function onPickAnchor(v: string): void {
   const cfg = appState.timelineConfig;
-  const v = (e.target as HTMLInputElement).value;
-  if (!cfg || !v) return;
-  const anchorMs = new Date(v).getTime();
-  if (!Number.isFinite(anchorMs)) return;
-  setTimeline(buildTimelineTimes(cfg, anchorMs), appState.fileUrlTemplate);
-  setScreenTime(appState.activeScreenId, v + ':00');
+  if (!cfg || !v || v.length !== 12) return;
+  const iso = `${v.slice(0, 4)}-${v.slice(4, 6)}-${v.slice(6, 8)}T${v.slice(8, 10)}:${v.slice(10, 12)}:00`;
+  setTimeline(buildTimelineTimes(cfg, new Date(iso).getTime()), appState.fileUrlTemplate);
+  setScreenTime(appState.activeScreenId, iso);
 }
 
 defineExpose({ step });
@@ -118,27 +134,32 @@ defineExpose({ step });
 
     <button class="btn" title="下一时次" @click="step(1)">▶</button>
 
-    <!-- 时间选择控件（仅配置模式）：选预报起报时间 / 实况结束时间 -->
+    <!-- 锚点时间选择（Element Plus，仅配置模式）：预报选起报时间 / 实况选结束时间 -->
     <template v-if="isConfigMode">
       <span class="timeline-pick-label">{{ pickLabel }}</span>
-      <input
+      <el-date-picker
+        v-model="anchorValue"
         class="timeline-dt"
-        type="datetime-local"
+        type="datetime"
         title="预报模式为起报时间，实况模式为结束时间"
-        :value="pickValue"
+        format="YYYY-MM-DD HH:mm"
+        value-format="YYYYMMDDHHmm"
+        :clearable="false"
         @change="onPickAnchor"
       />
     </template>
 
-    <!-- 时间选择框：快速跳转时次（显示 YYYY-MM-DD HH:mm，值 YYYYMMDDHHmm） -->
-    <select
-      class="timeline-select"
+    <!-- 时间选择控件（Element Plus）：跳转时次（显示 YYYY-MM-DD HH:mm，值 YYYYMMDDHHmm，不吸附） -->
+    <el-date-picker
+      v-model="jumpValue"
+      class="timeline-jump"
+      type="datetime"
       title="选择时次"
-      :value="selectValue"
+      format="YYYY-MM-DD HH:mm"
+      value-format="YYYYMMDDHHmm"
+      :clearable="false"
       @change="onSelectTime"
-    >
-      <option v-for="o in timeOptions" :key="o.value" :value="o.value">{{ o.label }}</option>
-    </select>
+    />
 
     <span class="timeline-time">{{ fmt(activeScreen?.time) }}</span>
     <span class="timeline-count">{{ currentIndex + 1 }} / {{ timelineTimes.length }} 时次</span>

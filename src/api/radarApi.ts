@@ -20,7 +20,7 @@
  *
  * 文件路径两种获取方式（见 configApi）：
  *   - 模板模式：buildFileMetaFromTemplate 按配置模板 + 时刻直接构造地址；
- *     404 时抛 RadarFileMissingError，UI 提示“该时次无文件”。
+ *     404 时抛 RadarFileMissingError，UI 提示“该时次无数据”。
  *   - 清单模式：fetchRadarFileList(配置地址) 拉清单，按时间精确匹配。
  *
  * 后端接入说明：清单地址/模板地址均可指向服务器任意目录（相对路径或
@@ -34,7 +34,7 @@ import { parseRADAMOSAIC, isRADAMOSAIC } from '../parse/mosaicParser';
 import { isMicapsM4, parseMicapsM4 } from '../parse/micapsM4Parser';
 import { findProduct } from './productApi';
 
-/** 数据文件不存在（HTTP 404）专用错误：UI 据此提示“该时次无文件”而非“加载失败” */
+/** 数据文件不存在（HTTP 404）专用错误：UI 据此提示“该时次无数据”而非“加载失败” */
 export class RadarFileMissingError extends Error {
   constructor(url: string) {
     super('数据文件不存在：' + url);

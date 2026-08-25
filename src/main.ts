@@ -12,6 +12,9 @@
 import { createApp } from 'vue';
 import { init as qeInit, consts } from '@quickearth/core';
 import 'leaflet/dist/leaflet.css'; // Leaflet 基础样式（必须）
+// Element Plus 样式（时间选择控件用）+ 深色主题变量（配合 html.dark）
+import 'element-plus/dist/index.css';
+import 'element-plus/theme-chalk/dark/css-vars.css';
 import './styles.css';             // 平台自定义样式
 
 import App from './App.vue';

@@ -367,7 +367,7 @@ button {
 /* ───────────── 底部时间轴 ───────────── */
 .timeline {
   display: flex;
-  align-items: center;
+  align-items: flex-start; /* 控件行与画布顶部时间条对齐 */
   gap: 12px;
   padding: 8px 16px;
   background: #1a2330;
@@ -386,6 +386,31 @@ button {
   user-select: none;
 }
 
+/* 时间条高度基准：按钮/时间控件/文字统一 20px 高，与画布顶部时间条（20px）对齐 */
+.timeline .btn {
+  height: 20px;
+  padding: 0 10px;
+  font-size: 12px;
+  line-height: 1;
+}
+
+.timeline .el-select,
+.timeline .el-date-editor {
+  --el-component-size: 20px;
+}
+
+.timeline-pick-label {
+  line-height: 20px;
+}
+
+.timeline-time {
+  line-height: 20px;
+}
+
+.timeline-count {
+  line-height: 20px;
+}
+
 .timeline-time {
   font-family: Consolas, monospace;
   font-size: 14px;
@@ -399,33 +424,20 @@ button {
   font-size: 12px;
 }
 
-/* 时间选择控件（配置模式：选预报起报时间 / 实况结束时间） */
+/* 时间选择控件（Element Plus，配置模式：选预报起报时间 / 实况结束时间）；
+   尺寸统一 20px 的规则见底部时间轴分节（--el-component-size） */
 .timeline-pick-label {
   color: #8fa3ba;
   font-size: 12px;
   white-space: nowrap;
 }
 
+/* 宽度保证文字完整显示（"2022-04-12 00:00" + 箭头/图标） */
 .timeline-dt {
-  padding: 3px 6px;
-  background: #223047;
-  border: 1px solid #35455c;
-  border-radius: 4px;
-  color: #d8e2ee;
-  color-scheme: dark; /* 原生日历/时钟弹层跟随深色主题 */
-  font-family: inherit;
-  font-size: 12px;
+  width: 185px;
 }
 
-/* 时间选择框：下拉快速跳转时次（显示 YYYY-MM-DD HH:mm，值 YYYYMMDDHHmm） */
-.timeline-select {
-  max-width: 150px;
-  padding: 3px 4px;
-  background: #223047;
-  border: 1px solid #35455c;
-  border-radius: 4px;
-  color: #d8e2ee;
-  color-scheme: dark;
-  font-family: inherit;
-  font-size: 12px;
+/* 时间选择控件（Element Plus）：跳转时次 */
+.timeline-jump {
+  width: 160px;
 }

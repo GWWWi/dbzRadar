@@ -13,6 +13,131 @@
 
 # 迭代变更日志（按时间倒序）
 
+【2026-08-25 本轮改动（日期面板无法选择修复）】
+
+1. 修改文件：`src/components/Timeline.vue`
+
+2. 修改目的：修复 el-date-picker 面板点击日期无响应——原用只读 :model-value + @change 受控绑定，面板内部状态被未更新的 prop 重置。改为标准 v-model + 本地 ref（jumpValue/anchorValue），外部时刻变化经 watch 同步进 ref。
+
+3. 关键规则沉淀：
+   - ★ Element Plus 表单类控件（date-picker/select 等）禁止只读 :model-value 受控：面板交互依赖 update:model-value 回流，必须 v-model（本地 ref）+ watch 同步外部状态 + @change 应用业务
+   - ref 同步源：jumpValue ← activeScreen.time；anchorValue ← timelineConfig.mode + timelineTimes（预报首时次/实况末时次）
+
+【2026-08-25 本轮改动（时间控件宽度 + 无数据提示）】
+
+1. 修改文件：`src/components/Timeline.vue`、`src/components/RadarScreen.vue`、`src/styles.css`、`src/api/radarApi.ts`（注释）、`AGENTS.md`
+
+2. 修改目的：时间选择控件宽度 175→160px（去掉多余留白）；选择时刻不再吸附最近时次，直接按所选时间取文件，清单找不到/模板 404 统一提示"该时次无数据"（原"该时次无文件"）。
+
+3. 关键规则沉淀：
+   - 时间选择控件跳转不吸附：用户选什么时间就查什么时间，文件不存在由 RadarScreen 状态栏提示"该时次无数据"（清单 missing / 模板 RadarFileMissingError 两路径不变，仅措辞调整）
+   - 刻度轴拖拽的吸附行为保持不变（仅时间控件取消吸附）
+
+【2026-08-25 本轮改动（时次下拉框改时间选择控件）】
+
+1. 修改文件：`src/components/Timeline.vue`、`src/styles.css`、`AGENTS.md`
+
+2. 修改目的：时次下拉框（el-select）改为 el-date-picker 时间选择控件——显示 YYYY-MM-DD HH:mm、value YYYYMMDDHHmm，所选时刻二分吸附最近可用时次后跳转；删除 timeOptions 选项列表与 ElSelect/ElOption 导入，样式类 .timeline-select → .timeline-jump。
+
+3. 关键规则沉淀：
+   - 离散时次场景下 el-date-picker 任意时刻输入需吸附最近可用时次（与 TimeAxis 画布行为一致），二分查找 times 数组
+   - :model-value + @change 受控用法（非 v-model），value-format="YYYYMMDDHHmm" 紧凑串直接作为控件值
+
+【2026-08-25 本轮改动（锚点时间控件 value 格式统一）】
+
+1. 修改文件：`src/components/Timeline.vue`
+
+2. 修改目的：锚点时间控件（el-date-picker，配置模式）与时次下拉框统一规格——显示格式 YYYY-MM-DD HH:mm（format），value 为紧凑串 YYYYMMDDHHmm（value-format）；onPickAnchor/pickValue 按紧凑串换算 ISO。
+
+3. 关键规则沉淀：el-date-picker 的 value-format="YYYYMMDDHHmm" 可直接解析紧凑串（dayjs 分段解析）；两个时间控件 value 格式统一后换算逻辑可复用（slice 定位拼接 ISO，秒固定 00）。
+
+【2026-08-25 本轮改动（悬停提示到分钟）】
+
+1. 修改文件：`src/components/TimeAxis.vue`
+
+2. 修改目的：鼠标滑动悬停提示时间格式改为 YYYY-MM-DD HH:mm（fmtMin）；选中时刻的指示线文字保持 YYYY-MM-DD HH:mm:ss（fmtFull）不变。
+
+3. 关键规则沉淀：悬停提示与选中时刻文字用两个格式函数区分（fmtMin/fmtFull），避免一刀切修改被整体撤回。
+
+【2026-08-25 本轮改动（撤回提示到分钟）】
+
+1. 修改文件：`src/components/TimeAxis.vue`、`src/components/Timeline.vue`
+
+2. 修改目的：按用户要求撤回上一轮"提示到分钟"修改——画布悬停/选中时刻文字恢复为 YYYY-MM-DD HH:mm:ss（fmtFull），右侧当前时间恢复 MM-DD HH:mm:ss。
+
+3. 关键规则沉淀：撤回修改用编辑工具精确回退对应代码，不用 git checkout（会连带丢掉其他未提交改动）。
+
+【2026-08-25 本轮改动（时间轴提示到分钟）】
+
+1. 修改文件：`src/components/TimeAxis.vue`、`src/components/Timeline.vue`
+
+2. 修改目的：时间轴提示文字去掉秒——画布悬停时间与选中时刻文字改为 YYYY-MM-DD HH:mm（fmtMin），右侧当前时间文字改为 MM-DD HH:mm（slice(5,16)）。
+
+3. 关键规则沉淀：时间显示类格式统一到分钟；fmtISO 为唯一 ISO 生成源，画布文字用 fmtMin 截取。
+
+【2026-08-25 本轮改动（拖动后视图不回弹修复）】
+
+1. 修改文件：`src/components/TimeAxis.vue`
+
+2. 修改目的：修复"不能向左移动/拖动没生效"——原实现在松手后 viewMs=null 使视图弹回选中时次，时次稀疏时吸附结果仍是原时次，拖动净效果为零。
+
+3. 关键规则沉淀：
+   - 松手后视图停在拖动位置（viewMs 持久化，不再重置）；选中时刻的绿色指示线画在 xFor(currentMs)（随视图滑动，可能偏离中心）
+   - emitGuard + nextTick 区分"画布内部选时"（视图不动）与"外部跳转"（视图重新居中）；guard 在 nextTick 清除，watch 先于 nextTick 执行保证顺序
+   - pointerdown 锚点必须取视图中心 viewMs ?? currentMs（两者可能不重合，否则拖拽起步视图跳变）
+   - 时间轴/标记重建（times 变化）时 viewMs 重置重新居中
+
+【2026-08-25 本轮改动（时间轴拖动松手后取文件）】
+
+1. 修改文件：`src/components/TimeAxis.vue`、`AGENTS.md`
+
+2. 修改目的：时间轴拖拽改为"拖动中仅自由平移视图（不吸附、不触发取文件），松手后吸附最近时次并 emit 加载对应时间的文件"，避免拖动过程中连续触发取数。
+
+3. 关键规则沉淀：
+   - pointermove 拖拽分支只更新 viewMs 并置 dragMoved=true，不再 emit
+   - pointerup 统一处理：dragMoved=true → 吸附视图中心最近时次 emit；否则按点击处理（吸附点击位置最近时次）；最后 viewMs=null 回归受控
+   - emit 后父组件 setScreenTime → RadarScreen 查文件（无文件提示"该时次无文件"），链路不变
+
+【2026-08-25 本轮改动（按钮与时间条对齐）】
+
+1. 修改文件：`src/styles.css`
+
+2. 修改目的：时间轴 ◀▶ 按钮与画布顶部时间条（20px 刻度条）对齐——.timeline 改为 align-items: flex-start，按钮高度 20px、Element Plus 控件 --el-component-size: 20px、文字行高 20px，整行控件与时间条顶对齐且等高。
+
+3. 关键规则沉淀：
+   - 同一属性的多处声明以后者为准，调整尺寸时先清理旧覆盖（本次删除了遗留的 28px 规则，统一为 20px）
+   - 时间条基准高度 = TimeAxis 画布顶部 scaleBar 的 20px，控件行全部按此基准对齐
+
+【2026-08-25 本轮改动（时间轴边缘刻度裁切修复）】
+
+1. 修改文件：`src/components/TimeAxis.vue`
+
+2. 修改目的：修复时间轴两端刻度文字被裁切（左侧"00"贴边、右侧"12:"截断），视觉上像与左右按钮没对齐。
+
+3. 关键规则沉淀：
+   - 画布增加左右内边距 PAD_X=10：时间跨度映射到 [PAD_X, width-PAD_X]，边缘刻度标注钳制在画布内（tx ∈ [2, width-文字宽-2]）
+   - 留白对称时"点击位置→时间"换算公式不变（center + (x - width/2)*msPerPx 仍成立），仅 xFor/msAt 需计入 PAD_X
+
+【2026-08-25 本轮改动（时间轴控件对齐与文字完整显示）】
+
+1. 修改文件：`src/styles.css`
+
+2. 修改目的：时间轴底部控件水平对齐、时间控件文字完整显示——Element Plus 控件统一 28px 高（--el-component-size 覆盖，与按钮居中对齐）；el-select 加宽到 175px、el-date-editor 加宽到 185px，避免"2022-04-12 00:00"被截断。
+
+3. 关键规则沉淀：Element Plus 组件尺寸用 CSS 变量 `--el-component-size` 覆盖最省事；下拉框宽度需按"最长文字 + 箭头/图标"预留（14px 字体下 16 字符约需 165px+）。
+
+【2026-08-25 本轮改动（Element Plus 时间控件 + 拖动修复）】
+
+1. 修改文件：`package.json`（新增 element-plus 依赖）、`src/main.ts`、`index.html`、`src/components/Timeline.vue`、`src/components/TimeAxis.vue`、`src/styles.css`、`AGENTS.md`
+
+2. 修改目的：时间选择控件改用 Element Plus（el-date-picker 选锚点、el-select filterable 跳转时次，深色主题 html.dark + dark css-vars）；修复时间轴拖不动的问题。
+
+3. 关键规则沉淀：
+   - 拖不动根因：视图中心直接用吸附后的 current，时次稀疏（间隔年/天级）时拖动中吸附结果不变 → 视觉完全不动。修复：TimeAxis 增加 viewMs 拖拽视图中心（自由平移、钳制在数据范围内），仅选中时次吸附 emit，松手后 viewMs=null 回归受控
+   - Element Plus 深色主题：index.html 加 html.dark + 引入 theme-chalk/dark/css-vars.css；控件显式 import（ElDatePicker/ElSelect/ElOption）以便 vue-tsc 类型检查
+   - el-date-picker 用 value-format="YYYY-MM-DD HH:mm:ss"（空格分隔），换算 ISO 时 replace(' ','T')；el-select @change 直接收到 value
+   - 原生 datetime-local 无法自定义显示/值格式，需自定义格式时用 Element Plus 或自绘组件
+
 【2026-08-24 本轮改动（时间轴 Canvas 化）】
 
 1. 修改文件：`src/components/TimeAxis.vue`（新建，参考 E:\test\timeline-canvas 项目）、`src/components/Timeline.vue`、`src/styles.css`、`AGENTS.md`
@@ -155,5 +280,9 @@
 
 # 遗留问题&注意事项
 
+- manifest.json 已重新生成（6 条，2024-06-21 新数据），但有缺口待处理：
+  1) 手工放置的 .bin.bin（无对应 .bz2）未登记——其中 Z_RADR_I_Z9543_20240621130000_O_DOR_SA_CAP_FMT.bin.bin 为 5.9MB 合法 RSTM（有效数据被漏登）；prepare-data.cjs 第 2 步只登记 RADAMOSAIC .bin，需扩展支持 RSTM 命名的 .bin.bin
+  2) 3 个 .bz2（Z9536_120000、Z9543_160000、Z9543_180000）首 4 字节全 0，非合法 bz2 也非 RSTM，hasData=false 走合成兜底（属数据本身问题）
+  3) 脚本会用 0 字节覆盖已有 .bin.bin（解压失败时），建议加"已有非空产物则跳过解压"保护
 - ★ 点击取值弹窗数值与色块颜色不一致（用户截图：色块品红 60~65 档，弹窗显示 54.0 dBZ）。已排查结论：QE BitmapColorScaleGL.createFromStopRules 的 value→颜色分段映射验证正确（54 → 红档）；疑似 sampleGridValue 的 Math.round 最近邻取样与 QE bitmap 渲染的格点定位（格点=像元中心还是左下角锚点）存在半格偏移，或 yDelta<0 行序理解不一致。待继续定位（可用真实数据对比点击点邻域格点值与渲染色档）。
 - 本轮时间轴/配置改造后未做浏览器端手工验证（无测试框架，仅 vue-tsc 通过）；建议 dev 起服后验证：配置模式时间选择控件重生成、模板模式 404 提示、清单回退模式（无 config.json）demo 行为不变。

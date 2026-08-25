@@ -57,13 +57,13 @@ async function refresh(): Promise<void> {
 
   const product = getProductByIdSafe(sc.productId);
   if (!product || !sc.time) return;
-  // 文件路径解析：模板模式按时刻构造地址（404 → 提示无文件）；
-  // 清单模式按时间在清单中精确匹配，清单无此时次 → 提示无文件
+  // 文件路径解析：模板模式按时刻构造地址（404 → 提示无数据）；
+  // 清单模式按时间在清单中精确匹配，清单无此时次 → 提示无数据
   const file = appState.fileUrlTemplate
     ? buildFileMetaFromTemplate(appState.fileUrlTemplate, sc.time)
     : (appState.files.find((f) => f.time === sc.time) ?? null);
   if (!file) {
-    setScreenStatus(props.screenId, '该时次无文件');
+    setScreenStatus(props.screenId, '该时次无数据');
     return;
   }
 
@@ -101,8 +101,8 @@ async function refresh(): Promise<void> {
     );
   } catch (e) {
     console.error('[RadarScreen] 渲染失败：', e);
-    // 404（模板模式时间轴时次未必有文件）→ 提示无文件；其余 → 加载失败
-    setScreenStatus(props.screenId, e instanceof RadarFileMissingError ? '该时次无文件' : '加载失败');
+    // 404（模板模式时间轴时次未必有文件）→ 提示无数据；其余 → 加载失败
+    setScreenStatus(props.screenId, e instanceof RadarFileMissingError ? '该时次无数据' : '加载失败');
   }
 }
 

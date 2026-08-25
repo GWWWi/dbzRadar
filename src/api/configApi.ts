@@ -102,3 +102,37 @@ export function buildTimelineTimes(cfg: AppConfig, anchorMs: number = Date.now()
   for (let t = startMs; t <= endMs; t += stepMs) times.push(fmtISO(t));
   return times;
 }
+
+/**
+ * 获取当前产品最新时间（接口约定，★ 当前为假数据实现）。
+ * 假数据：直接返回当前时间（取整到分钟的 ISO 串）。
+ * 后端接入时替换为真实请求（如 GET /api/radar/latest?product={productId}）。
+ *
+ * @param productId 产品代码（假数据暂未区分产品，保留参数以匹配真实接口签名）
+ * @returns 最新时刻 ISO 串 'yyyy-MM-ddTHH:mm:00'
+ */
+export async function fetchLatestTime(productId: string): Promise<string> {
+  void productId;
+  return fmtISO(Date.now());
+}
+
+/**
+ * 把任意时刻吸附到时间轴上最近的时次（times 为空时原样返回 target）。
+ * 用于"最新时间"等接口返回值不在时间轴上时，保证赋值的时次有效。
+ */
+export function snapNearestTime(times: string[], target: string): string {
+  if (!times.length) return target;
+  const t = new Date(target).getTime();
+  let lo = 0;
+  let hi = times.length - 1;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (new Date(times[mid]).getTime() < t) lo = mid + 1;
+    else hi = mid;
+  }
+  const near =
+    lo > 0 && t - new Date(times[lo - 1]).getTime() <= new Date(times[lo]).getTime() - t
+      ? times[lo - 1]
+      : times[lo];
+  return near;
+}

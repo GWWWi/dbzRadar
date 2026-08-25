@@ -32,7 +32,7 @@ import {
 } from './store/appStore';
 import { fetchProductList } from './api/productApi';
 import { fetchRadarFileList } from './api/radarApi';
-import { fetchAppConfig, buildTimelineTimes } from './api/configApi';
+import { fetchAppConfig, buildTimelineTimes, fetchLatestTime, snapNearestTime } from './api/configApi';
 
 /** 网格布局 class：决定多屏排列方式 */
 const gridClass = () => `grid-${appState.layout}`;
@@ -54,6 +54,11 @@ onMounted(async () => {
       // 回退：无配置文件 → 时间轴取自清单文件时刻（本地 demo 行为）
       setFiles(await fetchRadarFileList());
     }
+    // 获取当前产品最新时间（假数据接口）→ 吸附到时间轴最近时次，
+    // 赋值到时间轴与时间选择控件（setScreenTime 经 jumpValue watch 同步控件）
+    const latest = await fetchLatestTime(appState.screens[appState.activeScreenId]?.productId ?? 'Z');
+    const snapped = snapNearestTime(timelineTimes.value, latest);
+    if (snapped) setScreenTime(appState.activeScreenId, snapped);
   } catch (e) {
     console.error('[App] 初始化数据加载失败：', e);
   }

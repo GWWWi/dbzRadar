@@ -215,7 +215,8 @@ button {
   position: absolute;
   right: 8px;
   bottom: 8px;
-  z-index: 900; /* 高于 leaflet 瓦片(200)/矢量(400)/弹窗(700) 各 pane */
+  /* 高于 leaflet 各 pane(200~700) 与 QE 的 GL 画布层，保证色标永远可见 */
+  z-index: 1200;
   padding: 6px 9px;
   background: rgba(16, 22, 31, 0.78);
   border: 1px solid #33445c;
@@ -240,7 +241,8 @@ button {
 
 .legend-bar {
   display: flex;
-  width: 176px;
+  /* 色标条加长：档位更易分辨，手柄拖动精度也更高 */
+  width: 220px;
   height: 10px;
   border-radius: 2px;
   overflow: hidden;
@@ -256,6 +258,93 @@ button {
   margin-top: 2px;
   font-size: 9px;
   color: #9fb4cc;
+}
+
+/* 范围外色块变暗：提示“这段颜色当前不会画到地图上” */
+.legend-cell--muted {
+  opacity: 0.18;
+}
+
+/* ───────────── 色标范围选择（叠加在色标条上） ───────────── */
+/*
+ * 结构：.legend-bar-wrap（相对定位，上下各留 8px 给滑块手柄）
+ *         ├─ .legend-bar    色标条（高 10px）
+ *         └─ .legend-range  绝对定位的双滑块，垂直居中压在色标条之上
+ * 轨道背景透明，露出下面的色标颜色；已选区间用半透明白色轻提示。
+ * 拖动滑块不触发图例浮层拖拽由模板的 @pointerdown.stop 保证。
+ */
+.legend-bar-wrap {
+  position: relative;
+  padding: 8px 0; /* 给滑块手柄留出上下空间，避免压到标题/刻度 */
+}
+
+/*
+ * 定位方式（自绘手柄，不依赖任何第三方组件的内部布局）：
+ *   .legend-range 覆盖整个色标区（含上下 8px 留白，共 26px）；
+ *   手柄 top:50% = 13px，正好是色标条（8~18px）的中线，
+ *   再用 translate(-50%,-50%) 让圆点中心与中线重合。
+ *
+ * ★ 为什么不用 el-slider ★
+ *   其 height / runway margin / button-wrapper top 随 Element Plus 版本变化，
+ *   逐一覆盖仍会出现固定偏移（已在两轮尝试中踩坑）。
+ *   自绘手柄的位置只由本文件决定，色标条高度不变就永远对齐。
+ */
+.legend-range {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  bottom: 0;
+  z-index: 2; /* 压住色块 */
+  pointer-events: none; /* 只有手柄接收事件，空白处保持图例可拖拽 */
+}
+
+.legend-handle {
+  position: absolute;
+  top: 50%;
+  width: 12px;
+  height: 12px;
+  transform: translate(-50%, -50%);
+  border: 2px solid #fff; /* 白色描边 */
+  border-radius: 50%;
+  background: #0d1420;
+  box-sizing: border-box;
+  /* hover / 按下统一显示“小手”，与图例其他可交互元素的交互语义一致 */
+  cursor: pointer;
+  pointer-events: auto;
+  touch-action: none; /* 触屏拖动不触发页面滚动 */
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.45);
+}
+
+/* 扩大点击热区到 20px，视觉尺寸不变 */
+.legend-handle::before {
+  content: '';
+  position: absolute;
+  inset: -4px;
+}
+
+.legend-range-info {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  margin-top: 6px;
+  font-size: 10px;
+  color: #9fb4cc;
+  white-space: nowrap;
+}
+
+.legend-reset {
+  padding: 0;
+  border: none;
+  background: none;
+  color: #7fd0ff;
+  font-size: 10px;
+  cursor: pointer;
+}
+
+.legend-reset:hover {
+  text-decoration: underline;
 }
 
 /* ───────────── 多屏网格 ───────────── */
@@ -330,6 +419,12 @@ button {
 
 .screen-smooth input {
   cursor: pointer;
+}
+
+/* 屏头上传按钮（每屏独立）：复用 .btn 基础样式 */
+.screen-upload {
+  margin-left: 6px;
+  white-space: nowrap;
 }
 
 /* 地图容器必须显式占满剩余高度，Leaflet 才能正确量算 */

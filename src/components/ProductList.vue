@@ -15,10 +15,8 @@ import {
   setActiveScreen
 } from '../store/appStore';
 
-/** 激活屏当前的产品代码（用于高亮） */
-const activeProductId = computed(
-  () => appState.screens[appState.activeScreenId]?.productId ?? ''
-);
+/** 激活屏当前的产品代码（用于高亮）；统一从 activeScreen 取，不直接索引数组 */
+const activeProductId = computed(() => activeScreen.value?.productId ?? '');
 
 /** 时间格式化：'2022-06-19T00:00:43' → '06-19 00:00' */
 function fmt(t: string): string {

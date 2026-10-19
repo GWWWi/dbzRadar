@@ -12,6 +12,8 @@
  *   偏移 72  : float32 纬度（实测 37.350 ≈ 滨州 37.37）
  *   偏移 76  : float32 经度（实测 117.978 ≈ 滨州 117.93）
  *   偏移 96  : float32 缺测值（实测 -999999）
+ *              ★ 仅作格式说明，平台不使用该值 ★
+ *              平台缺测哨兵统一为 UNDEF(999999)，见 parseRSTM 的说明
  *
  * ⚠️ 注意：早期草稿文档记载的经纬度偏移为 88/92，实测该处为无效值
  *    （会导致地图定位错误），此处以实测偏移 72/76 为准。
@@ -28,6 +30,8 @@
  */
 
 import type { RadarGrid, RadarProduct } from '../types';
+// 平台统一缺测哨兵（三个解析器共用，禁止在本文件另定义）
+import { UNDEF } from '../constants';
 
 /** 默认站点：滨州 Z9543 坐标（头部完全不可用时兜底） */
 const DEFAULT_LAT = 37.37;
@@ -35,8 +39,8 @@ const DEFAULT_LON = 117.93;
 const DEFAULT_STATION_ID = 'Z9543';
 const DEFAULT_STATION_NAME = 'BinZhou_Z9543';
 
-/** 合成网格使用的缺测哨兵值 */
-export const SYNTH_UNDEF = 999999;
+/* 合成网格的缺测哨兵复用平台常量 UNDEF：
+ * RSTM 体数据不可解码，网格是“合成团块”，缺测表示必须与其他解析器一致。 */
 
 /* 头部字段偏移（小端） */
 const OFF_MAGIC = 0;
@@ -44,7 +48,8 @@ const OFF_STATION_ID = 32;
 const OFF_STATION_NAME = 40;
 const OFF_LAT = 72;   // 实测有效纬度位置
 const OFF_LON = 76;   // 实测有效经度位置
-const OFF_UNDEF = 96;
+// 注：偏移 96 的 float32 缺测值不读取 —— 平台统一用 UNDEF，
+//     读取后覆盖 grid.undef 会让合成网格的缺测哨兵失效（详见 parseRSTM）。
 
 /** 解析可选参数 */
 export interface ParseOptions {
@@ -81,13 +86,14 @@ function isAllZero(buf: Uint8Array): boolean {
 
 /**
  * 尝试解析 RSTM 头部；魔数不符 / 长度不足 / 经纬度明显非法时返回 null。
+ * 只提取站点标识与定位信息：体数据不可解码，缺测值字段也不参与平台约定
+ * （平台缺测哨兵固定为 UNDEF）。
  */
 function tryParseHeader(buf: Uint8Array): {
   stationId: string;
   stationName: string;
   lat: number;
   lon: number;
-  undef: number;
 } | null {
   if (buf.length < 100) return null;
   const magic = readAscii(buf, OFF_MAGIC, 4);
@@ -101,8 +107,7 @@ function tryParseHeader(buf: Uint8Array): {
 
   const stationId = readAscii(buf, OFF_STATION_ID, 8) || DEFAULT_STATION_ID;
   const stationName = readAscii(buf, OFF_STATION_NAME, 20) || stationId;
-  const undef = dv.getFloat32(OFF_UNDEF, true);
-  return { stationId, stationName, lat, lon, undef };
+  return { stationId, stationName, lat, lon };
 }
 
 /**
@@ -133,7 +138,7 @@ export function buildSynthetic(
   const product = opts.product;
   const productId = product ? product.id : 'Z';
   const units = product ? product.unit : 'dBZ';
-  const undef = SYNTH_UNDEF;
+  const undef = UNDEF;
 
   // —— 网格几何：半幅 2.0° 在 37°N 附近东西约 178km，可完整容纳 150km 半径圆 ——
   const half = 2.0;
@@ -152,7 +157,8 @@ export function buildSynthetic(
   const radiusKm = 150;  // 雷达有效探测半径（km）
   const cosLat = Math.cos((lat0 * Math.PI) / 180);
 
-  const data: number[] = new Array(xSize * ySize);
+  // Float32Array：合成网格同样走统一数据容器，避免与真实数据分支类型不一致
+  const data = new Float32Array(xSize * ySize);
   for (let r = 0; r < ySize; r++) {
     const lat = yStart + r * yDelta;
     for (let c = 0; c < xSize; c++) {
@@ -200,14 +206,24 @@ export function buildSynthetic(
  * 流程：
  *   1. 尝试解析 RSTM 头部；
  *   2. 头部无效（全 0 / 魔数不符）→ 完全合成兜底（isSynthetic=true）；
- *   3. 头部有效 → 站点信息取自真实文件；体数据用合成团块占位，
- *      标记 isSynthetic=false（表示“已识别为真实文件”）。
+ *   3. 头部有效 → 站点信息取自真实文件；体数据仍用合成团块占位。
+ *
+ * ★ 两条不可违反的约定（P0 修复记录）★
+ *   ① isSynthetic 必须保持 true：
+ *      头部有效只证明“文件确实是 RSTM”，体数据依旧是合成高斯团块，
+ *      不是真实观测。若置 false，UI 不显示“示意数据”，等于把假数据
+ *      当真实回波展示，属业务级误导。
+ *   ② 不得用头部缺测值覆盖 grid.undef：
+ *      合成网格的缺测哨兵是 UNDEF(999999)，而头部实测缺测值
+ *      常为 -999999。覆盖后渲染层会把范围外的 999999 当成有效值，
+ *      bitmap 模式钳位到最高档 → 雷达覆盖范围外整片“淡紫色”。
  */
 export function parseRSTM(buffer: ArrayBuffer, opts: ParseOptions = {}): RadarGrid {
   const buf = new Uint8Array(buffer);
   const header = isAllZero(buf) ? null : tryParseHeader(buf);
 
   if (!header) {
+    // 连站点信息都不可用：用默认滨州坐标兜底，保证永远可渲染
     return buildSynthetic({
       ...opts,
       lat: DEFAULT_LAT,
@@ -217,14 +233,13 @@ export function parseRSTM(buffer: ArrayBuffer, opts: ParseOptions = {}): RadarGr
     });
   }
 
-  const grid = buildSynthetic({
+  // 头部可信：站点定位用真实值，数据体仍是合成团块（isSynthetic 保持 true）。
+  // 直接返回 buildSynthetic 的结果，不做任何字段覆盖。
+  return buildSynthetic({
     ...opts,
     lat: header.lat,
     lon: header.lon,
     stationId: header.stationId,
     stationName: header.stationName
   });
-  grid.isSynthetic = false;
-  grid.undef = Number.isFinite(header.undef) ? header.undef : SYNTH_UNDEF;
-  return grid;
 }

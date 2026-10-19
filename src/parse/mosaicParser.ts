@@ -38,12 +38,11 @@
  */
 
 import type { RadarGrid, RadarProduct } from '../types';
+// 缺测哨兵统一由 constants 提供
+import { UNDEF } from '../constants';
 
 /** 头部字节数 */
 const HDR_BYTES = 1024;
-
-/** 缺测哨兵值：渲染层据此把无数据点画成透明 */
-export const UNDEF = 999999;
 
 /* 头部字段偏移（小端） */
 const OFF_YEAR = 66;      // int16 年
@@ -170,7 +169,8 @@ export function parseRADAMOSAIC(
   const zi = Math.min(Math.max(opts.layerIndex ?? DEFAULT_LAYER_INDEX, 0), zNum - 1);
   const base = zi * plane;
   const n = plane;
-  const data: number[] = new Array(n);
+  // 用 Float32Array 承载 168 万点（比 number[] 省一半堆内存），与渲染层类型一致
+  const data = new Float32Array(n);
   for (let i = 0; i < n; i++) {
     const v = raw[base + i];
     data[i] = v === rawUndef ? UNDEF : (v + offset) * scale;

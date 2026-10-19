@@ -24,12 +24,11 @@
  */
 
 import type { RadarGrid, RadarProduct } from '../types';
+// 平台缺测哨兵由 constants 提供
+import { UNDEF } from '../constants';
 
-/** MICAPS 缺测值 */
+/** MICAPS 文件内的缺测值（解析时映射为平台哨兵 UNDEF） */
 export const M4_UNDEF_RAW = 9999;
-
-/** 平台统一缺测哨兵值 */
-export const UNDEF = 999999;
 
 /** 文件头中位于“数据说明”之后的数值字段个数（19 个） */
 const HEADER_NUM_COUNT = 19;
@@ -127,7 +126,8 @@ export function parseMicapsM4(
       'M4 数据不足：需要 ' + n + ' 个值，实际 ' + dataTokens.length
     );
   }
-  const data: number[] = new Array(n);
+  // Float32Array：与渲染层 GridDataType.Float32 一致，省一半堆内存
+  const data = new Float32Array(n);
   for (let i = 0; i < n; i++) {
     const v = Number(dataTokens[i]);
     // 缺测(9999)或非法值 → 统一映射为平台缺测哨兵（渲染透明）

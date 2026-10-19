@@ -26,6 +26,7 @@ import {
   getProductList as getStaticProducts,
   getProductById as getStaticProductById
 } from '../config/products';
+import { fetchWithTimeout } from '../utils/http';
 
 /** 服务器产品目录地址（默认站点 /data/products.json，可用 setProductUrl 改指向） */
 let productUrl = 'data/products.json';
@@ -52,14 +53,39 @@ function normalizeProduct(raw: unknown): RadarProduct | null {
   if (typeof r.id !== 'string' || !r.id) return null;
   if (!Array.isArray(r.colorStops) || r.colorStops.length === 0) return null;
   const colorStops: ColorStop[] = [];
+  // 色标必须严格升序：它是区间填色的分档阈值，乱序/重复会让档位错乱
+  let prevValue = Number.NEGATIVE_INFINITY;
+  // 至少要有一个 alpha>0 的档，否则任何数据都不会被着色
+  let hasVisible = false;
+
   for (const s of r.colorStops) {
     if (!s || typeof s !== 'object') return null;
     const { value, stop } = s as Record<string, unknown>;
-    if (typeof value !== 'number' || !Array.isArray(stop) || stop.length !== 4) return null;
+    // NaN 也是 number，必须用 isFinite 过滤，否则升序比较会失效
+    if (typeof value !== 'number' || !Number.isFinite(value)) return null;
+    if (!Array.isArray(stop) || stop.length !== 4) return null;
+
     const rgba = stop.map(Number);
-    if (rgba.some((c) => !Number.isFinite(c))) return null;
+    // RGBA 各分量必须是 0~255 的有限数
+    if (rgba.some((c) => !Number.isFinite(c) || c < 0 || c > 255)) return null;
+    if (value <= prevValue) return null;
+    prevValue = value;
+    if (rgba[3] > 0) hasVisible = true;
+
     colorStops.push({ value, stop: [rgba[0], rgba[1], rgba[2], rgba[3]] });
   }
+
+  // 全透明色标 = 产品永远不显示数据，视为配置错误
+  if (!hasVisible) return null;
+
+  // 首档透明兜底（软校验）：缺失时不拒绝整表，只告警——
+  // 渲染层还有“低于首档可见阈值置缺测”的兜底，但配置方应补齐该档。
+  if (colorStops[0].stop[3] > 0) {
+    console.warn(
+      '[productApi] 产品 ' + r.id + ' 的色标首档不透明，建议补一个低值 alpha=0 的兜底档'
+    );
+  }
+
   return {
     id: r.id,
     name: typeof r.name === 'string' ? r.name : r.id,
@@ -77,7 +103,8 @@ function normalizeProduct(raw: unknown): RadarProduct | null {
  */
 export async function fetchProductList(): Promise<RadarProduct[]> {
   try {
-    const resp = await fetch(productUrl);
+    // 超时视为加载失败 → 回退内置静态目录（保证应用可用）
+    const resp = await fetchWithTimeout(productUrl);
     if (!resp.ok) throw new Error('HTTP ' + resp.status);
     const raw = (await resp.json()) as unknown;
     if (!Array.isArray(raw)) throw new Error('产品目录必须是 JSON 数组');

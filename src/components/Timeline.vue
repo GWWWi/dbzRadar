@@ -23,6 +23,7 @@ import {
   setTimeline
 } from '../store/appStore';
 import { buildTimelineTimes } from '../api/configApi';
+import { compact12ToISO, isoToCompact, isoToMs } from '../utils/datetime';
 import TimeAxis from './TimeAxis.vue';
 
 /** 当前激活屏时刻在时间轴上的索引（决定步进位置） */
@@ -65,7 +66,8 @@ watch(
     }
     const anchor =
       appState.timelineConfig?.timeline.mode === 'fcst' ? times[0] : times[times.length - 1];
-    anchorValue.value = anchor.replace(/[-:T]/g, '').slice(0, 12);
+    // 控件 value 为 12 位紧凑串（YYYYMMDDHHmm），由 utils/datetime 统一换算
+    anchorValue.value = isoToCompact(anchor, 12);
   },
   { immediate: true }
 );
@@ -81,7 +83,7 @@ const jumpValue = ref('');
 watch(
   () => activeScreen.value?.time ?? '',
   (t) => {
-    jumpValue.value = t ? t.replace(/[-:T]/g, '').slice(0, 12) : '';
+    jumpValue.value = t ? isoToCompact(t, 12) : '';
   },
   { immediate: true }
 );
@@ -92,8 +94,9 @@ watch(
  * 不存在时提示“该时次无数据”。
  */
 function onSelectTime(v: string): void {
-  if (!v || v.length !== 12) return;
-  const iso = `${v.slice(0, 4)}-${v.slice(4, 6)}-${v.slice(6, 8)}T${v.slice(8, 10)}:${v.slice(10, 12)}:00`;
+  // 控件 value 为 12 位紧凑串；换算集中到 utils/datetime，长度不符时返回空串跳过
+  const iso = compact12ToISO(v);
+  if (!iso) return;
   setScreenTime(appState.activeScreenId, iso);
 }
 
@@ -111,9 +114,11 @@ function step(delta: number): void {
  */
 function onPickAnchor(v: string): void {
   const cfg = appState.timelineConfig;
-  if (!cfg || !v || v.length !== 12) return;
-  const iso = `${v.slice(0, 4)}-${v.slice(4, 6)}-${v.slice(6, 8)}T${v.slice(8, 10)}:${v.slice(10, 12)}:00`;
-  setTimeline(buildTimelineTimes(cfg, new Date(iso).getTime()), appState.fileUrlTemplate);
+  if (!cfg) return;
+  // 与 onSelectTime 共用同一套紧凑串换算，避免两处格式不一致
+  const iso = compact12ToISO(v);
+  if (!iso) return;
+  setTimeline(buildTimelineTimes(cfg, isoToMs(iso)), appState.fileUrlTemplate);
   setScreenTime(appState.activeScreenId, iso);
 }
 

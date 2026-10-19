@@ -8,10 +8,275 @@
   - `src/render/`：渲染层，`radarRenderer.ts` 把 RadarGrid 渲染为 LPixelLayer 色斑图（bitmap 格点填色、不平滑）；`mapManager.ts` 创建地图与天地图底图
   - `src/store/appStore.ts`：Vue reactive 单例全局状态（多屏 / 产品 / 时间 / 播放）
   - `src/components/`：Toolbar / ProductList / Timeline / RadarScreen（单屏容器）/ Legend
-- 环境配置：`npm run dev`（scripts/dev.cjs，端口 5173）、`npm run build`；类型检查 `npx vue-tsc --noEmit`
+  - `src/utils/datetime.ts`：时间格式转换唯一实现（ISO / 紧凑串 / 显示文本）
+  - `src/utils/http.ts`：带超时的 fetch 封装（所有网络请求统一入口）
+  - `src/utils/range.ts`：色标数值范围判断与档位↔数值换算（渲染 / 取值 / 图例共用）
+  - `src/constants.ts`：跨层共享常量（统一缺测哨兵 `UNDEF`）
+- 环境配置：`npm run dev`（scripts/dev.cjs，端口 5179）、`npm run build`；类型检查 `npx vue-tsc --noEmit`
 - 数据契约：`src/types/index.ts` 中 RadarGrid —— x 经度/y 纬度，data 行优先一维数组，yDelta<0 表示第 0 行在最北；undef 为缺测哨兵值
 
 # 迭代变更日志（按时间倒序）
+
+【2026-10-19 本轮改动（数据加载后自动定位地图）】
+
+1. 修改文件：`src/components/RadarScreen.vue`、`AGENTS.md`
+
+2. 修改目的：地图默认固定视野与数据位置不一致（如滨州单站数据落在视野外），希望加载后自动定位到数据范围。
+
+3. 关键规则沉淀：
+   - `fitToGrid(grid)`：由 `xStart/yStart/xDelta/yDelta/xSize/ySize` 计算 `LatLngBounds`，调用 `fitBounds({ padding: [24,24], animate: false })`
+   - **仅在数据范围变化时定位**：`fittedBounds.equals(bounds, 1e-6)` 相同则跳过，避免同一区域切时次/切产品时重置用户手动缩放的位置
+   - 首次加载、上传新文件、清单模式切到不同站点（区域变化）都会自动定位
+   - `yDelta` 可能为负，构造 bounds 必须用 `Math.min/max` 归一
+   - 验证方式：`vue-tsc` 通过；浏览器待手工确认（打开即对准数据；切时次视野不动；上传异区域文件后自动跳转）
+
+【2026-10-19 本轮改动（修复切屏后雷达图层不显示）】
+
+1. 修改文件：`src/components/RadarScreen.vue`
+
+2. 修改目的：6 屏 ↔ 1 屏切换后，复用屏（第 1 屏）的雷达色斑消失，必须拖动/缩放地图才出现。
+
+3. 原因与修复：
+   - 根因：上一轮只加了 `invalidateSize`。它会触发 QE 的 canvas resize 并重建 framebuffer，但 GL 图层没有持续渲染循环，resize 后不会自动重绘 → 图层被清空后一直空白（与 P1 的 `forceRedraw` 同源）
+   - 修复：resize 回调中在 `invalidateSize` 之后调用 `layer.reinit()`（QE 公开 API：setupGL + 立即 _redraw）
+   - 新建屏不受影响：挂载时容器尺寸已确定，renderRadar 直接按正确尺寸绘制
+   - ★ 规则：任何导致地图容器尺寸变化的操作（切布局、窗口缩放）都必须 “invalidateSize + 图层 reinit” 成对出现 ★
+   - 验证方式：`vue-tsc` 通过；浏览器待手工确认（1 ↔ 6 屏来回切换后色斑应立即显示）
+
+【2026-10-19 本轮改动（修复分屏后雷达色斑位置偏移）】
+
+1. 修改文件：`src/components/RadarScreen.vue`
+
+2. 修改目的：1 屏切到 6 屏后，各屏雷达色斑不在正确地理位置（第 1/2 屏偏出视野，其余屏偏右下），缩放或拖动地图后才回正。
+
+3. 原因与修复：
+   - 根因：布局切换导致地图容器宽高变化，但没有调用 `map.invalidateSize()`。Leaflet 与 QE 的 GL 图层仍按旧容器尺寸生成投影与纹理，色斑被画到错误位置；地图交互会触发重新量算，所以表现为“缩放/拖动后回正”
+   - 修复：`RadarScreen` 用 `ResizeObserver` 监听 `.map` 容器，rAF 合并后调用 `invalidateSize({ animate: false })`；容器尺寸为 0（被隐藏）时跳过
+   - 卸载时取消待执行 rAF 并 disconnect，避免销毁后操作地图
+   - 与图例外挂 ResizeObserver 同源：复用组件在布局变化后必须重新量算自身尺寸
+   - 验证方式：`vue-tsc` 通过；浏览器待手工确认（1 屏切 6 屏后各屏色斑应立即位于正确地理位置）
+
+【2026-10-19 本轮改动（修复重置按钮 + 加宽图例）】
+
+1. 修改文件：`src/components/Legend.vue`、`src/styles.css`
+
+2. 修改目的：点击“重置”无反应；色标条偏窄，档位与手柄不易分辨。
+
+3. 关键规则沉淀：
+   - ★ 浮层内的按钮必须 `@pointerdown.stop` ★ 图例根元素在 pointerdown 时 `setPointerCapture` 开始拖拽，指针被根元素捕获后按钮收不到 click（只写 `@click.stop` 不够），表现为“点重置没反应”
+   - `.legend-bar` 宽度 176px → 220px；手柄位置按百分比、刻度/文本按 flex 自适应，无需其他改动
+   - 验证方式：`vue-tsc` 通过；浏览器待手工确认（点重置后两个手柄回到两端、全部色块恢复、地图显示全范围）
+
+【2026-10-19 本轮改动（修复分屏首屏色标消失）】
+
+1. 修改文件：`src/components/Legend.vue`、`src/styles.css`
+
+2. 修改目的：4 屏布局下第 1 屏的色标图例消失（只在底边露出一条背景）。
+
+3. 原因与修复：
+   - 根因：图例位置 `pos` 是组件内部状态。布局 1 屏 → 4 屏时，第 1 屏组件被复用，旧位置超出变矮后的地图区域，被 `.radar-screen` 的 `overflow: hidden` 裁掉；新增屏是新组件（pos=null）不受影响，所以只有被复用的屏“缺失色标”
+   - 修复：`Legend` 用 `ResizeObserver` 监听地图容器尺寸，变化时把已拖动的图例钳制回可见范围（布局切换、窗口缩放都覆盖）
+   - `.legend-float` 的 `z-index` 由 900 提升到 1200，避免被 QE 的 GL 画布层遮挡
+   - 验证方式：`vue-tsc` 通过；浏览器待手工确认（1 屏拖动图例 → 切 4 屏，第 1 屏图例应自动回到可见区域）
+
+【2026-10-19 本轮改动（范围手柄鼠标样式）】
+
+1. 修改文件：`src/styles.css`
+
+2. 修改目的：范围手柄 hover / 按下时统一显示“小手”（`cursor: pointer`），替换原来的左右缩放箭头（`ew-resize`）。
+
+3. 关键规则沉淀：
+   - 图例内可点击/可拖动元素统一用 `pointer`；`ew-resize` 仅适合表达“可横向调节”但不符合本平台交互习惯
+   - `.legend-float` 根元素的 `cursor: grab` 会被子元素 `.legend-handle` 的 `pointer` 覆盖，无需额外处理
+
+【2026-10-19 本轮改动（地图底图切换：行政 / 国界）】
+
+1. 修改文件：`src/types/index.ts`、`src/store/appStore.ts`、`src/render/mapManager.ts`、`src/components/Toolbar.vue`、`src/components/RadarScreen.vue`、`AGENTS.md`
+
+2. 修改目的：新增底图切换——"行政"保持天地图；"国界"用 `src/mapBorder` 的三份 GeoJSON 绘制矢量底图（陆地 `#efefdb`、海洋 `#97b6e1`、界线 `#606266`；世界/中国国界 1px、省界 0.8px）。
+
+3. 关键规则沉淀：
+   - `BaseMapMode` 全局状态在 store（`baseMap`），图层切换行为在 mapManager（`applyBaseMap` / `applyBaseMapToAll`），沿用“状态在 store、行为在 mapManager”约定
+   - 国界模式海洋色用地图容器内联背景承载（无接缝）；世界/中国多边形填充陆地色；省界 `fill: false` 只描边
+   - 矢量底图放 `qe-base-border` pane（zIndex 190），保证在瓦片（200）与雷达图层之下
+   - 三份 GeoJSON 用 `?url` 引入：首次切到国界才加载并缓存 Promise；构建产出独立 assets（444KB / 530KB / 3016KB），不进主包
+   - 每张地图独立切换 token：异步回来时若已切走或已卸载则丢弃；`unregisterMapLink` 同时清理底图登记（Map 持有地图引用会导致无法 GC）
+   - `createRadarMap` 开启 `preferCanvas`（省界 7.5 万点，SVG 渲染会卡）
+   - 验证方式：`vue-tsc` 通过；`npm run build` 成功，三个 JSON 作为独立资源输出
+
+【2026-10-19 本轮改动（范围手柄改为自绘，彻底解决叠加偏移）】
+
+1. 修改文件：`src/components/Legend.vue`、`src/styles.css`、`AGENTS.md`
+
+2. 修改目的：el-slider 叠加到色标条上时，其内部 `height` / `runway margin` / `button-wrapper top` 随 Element Plus 版本变化，多次覆盖后仍出现手柄跑到色标条外的固定偏移。改为自绘双圆点手柄，定位只由本项目 CSS 决定。
+
+3. 关键规则沉淀：
+   - 手柄 `.legend-handle`：`top:50%`（26px 色标区中心 = 13px = 色标条中线）+ `translate(-50%,-50%)`；水平位置按 `(idx+0.5)/n` 对准色块中心
+   - 拖动逻辑：`pointerdown` 记录朝向并 `setPointerCapture`；`pointermove` 按 `.legend-range` 宽度换算档位（钳制在另一手柄内侧）；**松手才写 store**，避免拖动中反复重建数据源
+   - 不再 import `ElSlider`，`sliderValue` / `watch` 同步逻辑一并删除
+   - `.legend-range` 保持 `pointer-events:none`，仅手柄 `auto`：色标条空白处仍可拖动图例浮层
+   - ★ 教训：第三方组件内部布局不能作为像素级对齐基准，需要精确叠加时优先自绘 ★
+
+【2026-10-19 本轮改动（修正范围滑块叠加定位）】
+
+1. 修改文件：`src/styles.css`
+
+2. 修改目的：上一轮把 el-slider 高度压到 10px 并清零 runway margin，实际渲染时手柄/轨道偏离色标条（跑到色标块外）。改为“只做整体居中、不碰组件内部尺寸”的稳定方案。
+
+3. 关键规则沉淀：
+   - 叠加层 `.legend-range` 用 `top:0; bottom:0` 覆盖整个色标区（含 8px 上下留白），内部 `el-slider` 用 `top:50% + translateY(-50%)` 整体居中 → 手柄中心 = 色标条中线，与 Element Plus 内部高度/margin 的版本差异解耦
+   - ★ 禁止覆盖 `.el-slider` 的 `height` 与 `.el-slider__runway` 的 `margin` ★ 这两个值随版本变化，覆盖后会产生固定偏移；只允许覆盖 `--el-slider-height`（轨道粗细）
+   - 容器 `pointer-events: none` + 滑块 `pointer-events: auto`：色标条空白处不拦截图例拖拽；`@pointerdown.stop` 在冒泡阶段仍然生效
+   - 手柄白色描边（含 `:hover` / `.dragging`）保持不变
+
+【2026-10-19 本轮改动（范围滑块垂直居中 + 白色描边）】
+
+1. 修改文件：`src/styles.css`
+
+2. 修改目的：让两个手柄的中心严格落在色标条垂直中线上；手柄描边改为白色。
+
+3. 关键规则沉淀：
+   - 叠加容器的绝对定位尺寸必须与色标条等高（10px），配合 `top: 50% + translateY(-50%)` 才能精确对齐；若按 el-slider 默认高度（26/32px）计算，会因内部 runway margin 产生上下偏移
+   - el-slider 需同时覆盖 `height` 与 `__runway` 的 `margin`，并用 flex `align-items: center` 居中，摆脱 Element Plus 默认的垂直布局
+   - 手柄 `border: 2px solid #fff`，并一并覆盖 `:hover` / `.dragging`，否则交互时会回弹成主题蓝描边
+   - 手柄 18px 点击区允许溢出 10px 容器：父级（`.legend-range` / `.legend-bar-wrap`）不得设置 `overflow: hidden`
+
+【2026-10-19 本轮改动（范围滑块叠加到色标条）】
+
+1. 修改文件：`src/components/Legend.vue`、`src/styles.css`
+
+2. 修改目的：按 UI 要求把范围双滑块从色标条下方移到色标条上叠加显示，减少图例高度。
+
+3. 关键规则沉淀：
+   - 结构改为 `.legend-bar-wrap`（相对定位 + 上下 8px 留白）同时包住 `.legend-bar` 与绝对定位的 `.legend-range`，滑块垂直居中压在色标条上
+   - 滑块轨道 `background: transparent` 露出色标颜色；已选区间用半透明白色（rgba 255/255/255/0.22）；手柄深底 + 亮蓝描边，保证在彩色色标上可辨认
+   - el-slider 压缩为 `height: 26px`、`--el-slider-height: 10px`、runway `margin: 8px 0`（8+10+8=26），与 10px 色标条精确垂直居中
+   - 范围文本与「重置」移到色标与刻度下方（`.legend-range-info`），不再占用色标条区域
+   - 滑块容器必须保留 `@pointerdown.stop`，否则拖动滑块会带动整个图例浮层
+
+【2026-10-19 本轮改动（修复范围滑块拖动后地图不刷新）】
+
+1. 修改文件：`src/render/radarRenderer.ts`、`src/components/RadarScreen.vue`、`AGENTS.md`
+
+2. 修改目的：拖动图例范围滑块松手后，数据源已按新范围重建，但地图画面不更新，必须缩放或拖动地图才刷新。
+
+3. 原因与修复：
+   - 根因：QE 的 GL 图层**没有持续渲染循环**，`setDataSource` / `setDrawOptions` 只替换数据与样式，不保证立即绘制；测绘帧调度不可用时表现为“数据已换、画面还是旧的”
+   - 修复：新增内部 `forceRedraw(layer)`，调用 QE 公开 API `reinit()`（内部 `setupGL()` + 直接 `_redraw()`），在 `updateRadarProduct` / `updateRadarRange` / `updateRadarSmooth` 三处更新后调用
+   - 影响面：不仅范围滑块，切换产品与平滑也走同一路径，一并获得即时刷新
+   - `renderRadar` 新建图层不调用（`addLayer` 本身触发绘制）
+   - `reinit()` 会重建 GL 资源，只允许用于低频交互（切产品 / 切平滑 / 范围松手）；**禁止放进播放循环**
+   - 验证方式：`npx vue-tsc --noEmit` 通过；浏览器待手工确认（松手后色斑立即变化、点击范围外无弹窗）
+
+【2026-10-19 本轮改动（取消单幅网格点数上限）】
+
+1. 修改文件：`src/constants.ts`、`src/parse/mosaicParser.ts`、`src/parse/micapsM4Parser.ts`、`AGENTS.md`
+
+2. 修改目的：按需求取消 P3 引入的 400 万点单幅网格上限（`MAX_GRID_POINTS`），解析器不再因头部声明的格点数拒绝文件。
+
+3. 关键规则沉淀：
+   - `MAX_GRID_POINTS` 常量与 mosaic/m4 两处校验块已删除，`constants.ts` 只保留 `UNDEF`
+   - 取消后超大网格仅由原有校验兜底：mosaic 检查“数据区不足”、m4 检查“数据 token 不足”；损坏文件若数据区确实足够大，会按声明分配大数组（原限制的初衷，当前接受该风险）
+   - 上传文件 200MB 上限、fetch 10s 超时、产品色标校验保持不变
+   - 若未来需要恢复限制，应在解析器分配数组之前校验，并同步更新 AGENTS.md 第 6 节第 14 条
+
+【2026-10-19 本轮改动（色标范围选择功能）】
+
+1. 修改文件：`src/types/index.ts`、`src/utils/range.ts`（新建）、`src/store/appStore.ts`、`src/render/radarRenderer.ts`、`src/components/Legend.vue`、`src/components/RadarScreen.vue`、`src/styles.css`、`AGENTS.md`
+
+2. 修改目的：图例增加每屏独立的色标数值范围选择（双滑块）：只把选中区间的颜色画到地图上，范围外格点透明；点击取值范围外同样返回空，保证“图上有色 = 点击有值”。
+
+3. 关键规则沉淀：
+   - `ValueRange` 语义左闭右开 `[min, max)`；上界取“结束档的下一档值”（选 20~50 档 → max=55），与色标分档 `[v_i, v_{i+1})` 一致
+   - 换算集中在 `utils/range.ts`（`isValueInRange` / `isValueVisible` / `rangeFromStopIndex` / `stopIndexFromRange`），渲染层与图例共用，禁止各写一份
+   - `ScreenState.valueRange` 每屏独立；`setLayout` 新屏继承并复制对象；范围变化走 `updateRadarRange` 重建数据源（放宽范围必须从原始网格重新过滤，与阈值变化同理）
+   - 图层判重键加入 `valueRangeKey`；上传数据同样应用本屏范围
+   - 图例滑块必须用本地 ref + watch 同步（Element Plus 受控踩坑，同 Timeline 的 date-picker）；滑块容器 `@pointerdown.stop` 防止拖动滑块带动整个浮层
+   - 验证方式：`npx vue-tsc --noEmit` 通过；范围语义、14 档全部索引组合往返、每屏状态隔离共 30 项断言通过（临时脚本已删除）
+
+【2026-10-19 本轮改动（P3：输入边界与失败反馈）】
+
+1. 修改文件：`src/utils/http.ts`（新建）、`src/constants.ts`、`src/api/radarApi.ts`、`src/api/configApi.ts`、`src/api/productApi.ts`、`src/parse/mosaicParser.ts`、`src/parse/micapsM4Parser.ts`、`src/store/appStore.ts`、`src/App.vue`、`AGENTS.md`
+
+2. 修改目的：把“会永久挂起 / 会 OOM / 会静默使用非法配置 / 失败无反馈”的边界情况全部收口。
+
+3. 关键规则沉淀：
+   - 所有 fetch 统一走 `utils/http.ts` 的 `fetchWithTimeout`（默认 10s），超时抛 `FetchTimeoutError`；覆盖产品目录、应用配置、文件清单、雷达文件四处
+   - 上传文件 > 200MB 直接拒绝（`arrayBuffer()` 全量入内存）；单幅网格 > 400 万点由 mosaic/m4 解析器在分配数组前拒绝（`MAX_GRID_POINTS`）
+   - 服务器产品色标校验加严：value 必须 `Number.isFinite` 且严格升序、RGBA 必须 0~255、至少一个 alpha>0 档，否则整表回退静态目录；首档不透明只 `console.warn`（渲染层弱值过滤仍兜底）
+   - `getProductByIdSafe` 在产品目录未加载时回退静态目录，**禁止返回 `colorStops: []` 占位**（空数组会让色例终止档号为 -1，QE 可能抛错）
+   - 应用初始化失败必须 `ElMessage.error` 给出可见反馈，不能只 `console.error`
+   - 验证方式：`npx vue-tsc --noEmit` 通过；超时、6 组色标校验、M4/拼图超限、上传超限、产品兜底共 19 项断言全部通过（临时脚本已删除）
+
+【2026-10-19 本轮改动（P1：播放 / 多屏性能）】
+
+1. 修改文件：`src/types/index.ts`、`src/parse/mosaicParser.ts`、`src/parse/micapsM4Parser.ts`、`src/parse/cinradParser.ts`、`src/render/radarRenderer.ts`、`src/render/mapManager.ts`、`src/api/radarApi.ts`、`src/api/configApi.ts`、`src/App.vue`、`src/components/TimeAxis.vue`、`AGENTS.md`
+
+2. 修改目的：解决播放/多屏场景的重复下载与主线程解析压力、网格内存占用、时间轴与地图联动的逐事件重绘，以及时间轴档数无上限的隐患。
+
+3. 关键规则沉淀：
+   - `RadarGrid.data` 改为 `Float32Array`（168 万点约 13.4MB → 6.7MB），三个解析器与渲染副本同步适配；Float32 可精确表示哨兵 999999（< 2^24）
+   - `fetchRadarGrid` 内置 LRU（12 条，键 = `binFile|productId`）+ 在途 Promise 合并：同一时次只下载解析一次，多屏同步共享同一 grid 对象 → **调用方必须只读**
+   - `buildTimelineTimes` 增加时次上限 3000：超限按整分钟放大间隔并 `console.warn`；默认 6 分钟 × 10 天 = 2401 档，行为不变
+   - App 播放推进前检查各屏 status，任一屏"加载中…"则跳过本次推进，避免请求/解析堆积；本轮未引入 Worker（缓存命中后解析不再是瓶颈）
+   - 地图联动 move 事件改 rAF 合并（每帧最多一次 setView）；**onMove 必须先判 syncing**，否则程序化 setView 会形成 A→B→A 的帧循环
+   - TimeAxis 重绘改 rAF 合并；timesMs/marksMs 升序排序，marks 用 lowerBound 二分只画可见区间；卸载时取消待执行帧
+   - 验证方式：`npx vue-tsc --noEmit` 通过；LRU 命中/并发合并/产品隔离/淘汰重载/Float32Array/拼图尺寸/时次上限共 20 项断言全部通过（临时脚本已删除）
+
+【2026-10-19 本轮改动（P2：抽出公共模块 + 统一屏 id 语义）】
+
+1. 修改文件：`src/utils/datetime.ts`（新建）、`src/constants.ts`（新建）、`src/api/configApi.ts`、`src/api/radarApi.ts`、`src/components/TimeAxis.vue`、`src/components/Timeline.vue`、`src/components/ProductList.vue`、`src/components/RadarScreen.vue`、`src/App.vue`、`src/store/appStore.ts`、`src/parse/mosaicParser.ts`、`src/parse/micapsM4Parser.ts`、`src/parse/cinradParser.ts`、`src/types/index.ts`、`AGENTS.md`
+
+2. 修改目的：收敛四处重复的时间格式实现与三处重复的缺测哨兵常量；把“屏 id”与数组下标解耦；修正端口 5173/5179 与 `listRadarFiles` 的文档漂移。
+
+3. 关键规则沉淀：
+   - 时间格式统一走 `src/utils/datetime.ts`（msToISO/msToText/isoToMs/isoToCompact/compact12ToISO/digits14ToISO），业务文件禁止再自写格式化；已验证输出与旧实现逐字节一致
+   - 缺测哨兵统一用 `src/constants.ts` 的 `UNDEF`；解析器只保留“文件内缺测表示”（M4_UNDEF_RAW=9999、mosaic rawUndef=255/9999）
+   - 屏 id 是稳定标识：store 所有 mutation 走 `findScreen(id)`，`setLayout` 新屏 id 取“当前最大 id + 1”；组件禁止再用 `screens[screenId]` 下标访问
+   - 产品查找双入口分工固定，不合并（避免 store 反向依赖 api）：`productApi.findProduct` 允许 undefined（解析层用）、`appStore.getProductByIdSafe` 永不 undefined（UI 用）
+   - 端口以 `package.json` 为准：5179（CLAUDE.md / AGENTS.md 已同步）
+   - 验证方式：`npx vue-tsc --noEmit` 通过；datetime 等价性、store id 语义两组临时断言脚本全部通过（脚本已删除）
+
+【2026-10-19 本轮改动（P0 修复：数据正确性 + 取数竞态）】
+
+1. 修改文件：`src/parse/cinradParser.ts`、`src/render/radarRenderer.ts`、`src/components/RadarScreen.vue`、`AGENTS.md`
+
+2. 修改目的：修复审查确认的 5 个 P0 问题（缺测哨兵被覆盖、合成数据未标注、渲染就地改数据不可逆、取数竞态、无数据时旧图层残留），并统一取值阈值口径。`npx vue-tsc --noEmit` 通过。
+
+3. 关键规则沉淀：
+   - `parseRSTM` 不再读取头部偏移 96 的缺测值（实测 -999999），也不再覆盖 `grid.undef`；合成网格哨兵恒为 `SYNTH_UNDEF(999999)`。否则范围外 999999 会被当成有效值渲染成最高档淡紫色
+   - `parseRSTM` 恒返回 `isSynthetic=true`（体数据是合成高斯团块，头部只提供站点定位），UI 据此显示"示意数据"
+   - `renderRadar` / `updateRadarProduct` 一律在副本上过滤弱值（`buildDisplayValues`），`grid.data` 永远保持原始值；阈值变化必须 `setDataSource` 重建数据源（变高补抹、变低恢复），阈值相同只 `setDrawOptions`
+   - `sampleGridValue` 新增第 4 参 `minVisible`：点击取值必须传 `firstVisibleThreshold(product)`，与渲染的透明口径一致
+   - `RadarScreen` 新增 `refreshToken` 请求序号：`refresh`/上传入口自增，每个 `await` 之后校验 `token === refreshToken`，过期响应与过期错误一律丢弃；`onBeforeUnmount` 自增以作废在途请求
+   - 无文件 / 加载失败必须 `clearLayer()`（移除图层 + 清 `layerGrid`），不得只改状态文本，否则屏上残留旧时次画面且点击返回旧值
+   - ★ 旧结论作废（2026-08-24 条目"renderRadar 就地修改 grid.data…取值天然与显示一致"已失效，以本条为准）
+   - ★ 待验证：`sampleGridValue` 与 QE bitmap 渲染的半格偏移仍需真实数据比对，确认前禁止加 0.5 偏移
+
+【2026-10-19 本轮改动（代码库全面审查）】
+
+1. 修改文件：`CLAUDE.md`（仅文档记录，未改动业务代码）
+
+2. 修改目的：对代码库做全维度审查（代码结构 / 性能 / 可维护性 / 重复逻辑 / 错误处理 / 安全 / 依赖 / 测试 / 构建部署），结论与分级优化清单见"待办事项清单"。
+
+3. 关键规则沉淀（审查确认的高危事实，后续改动必须遵守）：
+   - ★ `parseRSTM` 用文件头 undef（实测 -999999）覆盖了合成网格的 999999 哨兵，导致合成区"缺测"被当作有效值渲染成最高档色斑（`src/parse/cinradParser.ts` 末尾）
+   - ★ RSTM 体数据实际是合成高斯团块，却置 `isSynthetic=false`，UI 不提示"示意数据"，业务上属假数据未标注
+   - ★ 渲染层就地过滤弱值不可逆：产品由低阈值切回高阈值后，弱值已永久写成缺测（`src/render/radarRenderer.ts` maskBelowThreshold / updateRadarProduct）
+   - ★ `RadarScreen.refresh` 无请求序号/取消机制：快速切时次或播放时，先发后至的旧响应会覆盖新时次
+   - ★ 找不到文件或加载失败时未移除旧图层与 `layerGrid`：屏上仍显示上一时次色斑图，点击取值也返回旧值
+   - 时间格式化（ISO / 紧凑 14 位串）在 configApi、radarApi、TimeAxis、Timeline 各写一份；缺测哨兵 999999 在三个解析器各定义一次 —— 后续统一抽公共模块，禁止再各写一份
+
+【2026-08-25 本轮改动（每屏独立文件上传）】
+
+1. 修改文件：`src/api/radarApi.ts`、`src/components/RadarScreen.vue`、`src/styles.css`、`AGENTS.md`
+
+2. 修改目的：每屏屏头新增独立"上传"按钮——上传本地雷达数据文件后按预设格式识别（MICAPS m4 "diamond 4" → SWAN 拼图 "diamond" → RSTM 魔数 "RSTM"，按序判定），识别成功在本屏渲染并 ElMessage 提示，格式不符提示"文件格式不符"。
+
+3. 关键规则沉淀：
+   - parseUploadedFile(file, productId)：时刻优先取文件名 14 位串、否则文件修改时间；m4 判定必须在 mosaic 之前（两者头部同以 "diamond" 开头）；.bz2 不支持（compressjs 仅 Node），accept 限 .bin/.m4
+   - 上传数据记为当前时次视图（layerTime=sc.time）：切产品/平滑走局部刷新，切时次恢复时间轴数据
+   - input.value='' 重置以允许重复上传同一文件；ElMessage 提示 + 屏状态栏"上传数据/文件格式不符"
 
 【2026-08-25 本轮改动（日期面板无法选择修复）】
 
@@ -277,6 +542,26 @@
    - 类型检查命令：`npx vue-tsc --noEmit -p tsconfig.json`
 
 # 待办事项清单
+
+> 来源：2026-10-19 全面审查。按 P0→P5 顺序处理，每项完成即在此标注。
+
+- [x] `parse/cinradParser.ts`：合成数据 undef 与 `grid.undef` 不一致，缺测区被渲染为最高档 —— 2026-10-19 已修（不再覆盖哨兵）
+- [x] `parse/cinradParser.ts`：`isSynthetic=false` 语义错误（真实文件头 + 合成体数据），UI 应提示示意数据 —— 2026-10-19 已修（恒 true）
+- [x] `render/radarRenderer.ts`：弱值过滤就地改数据不可逆 —— 2026-10-19 已修（副本过滤 + 阈值变化重建数据源）
+- [x] `components/RadarScreen.vue`：取数竞态；失败与无数据时移除旧图层、清 `layerGrid` —— 2026-10-19 已修（refreshToken + clearLayer）
+- [ ] `render/radarRenderer.ts`：`sampleGridValue` 与 bitmap 渲染存在半格偏移（取值与色块不一致，历史遗留，需真实数据比对；已补注释与阈值口径，坐标公式未改）
+- [x] 播放/多屏并发：800ms 一档 × 4 屏同步 fetch + 主线程解析 168 万点 —— 2026-10-19 已修（LRU + 在途合并 + 播放避让加载中；未引入 Worker）
+- [x] `RadarGrid.data` 由 `number[]` 改 `Float32Array`（168 万点省约 50% 堆内存）—— 2026-10-19 已修
+- [x] `fetchRadarGrid` 无缓存：时间来回切换重复下载+解析，加 LRU（键 = binFile + productId）—— 2026-10-19 已修（上限 12 条，约 80MB）
+- [x] `mapManager` 地图联动用 `move` 逐帧 `setView`，改 rAF 节流或 `moveend` —— 2026-10-19 已修（rAF 合并 + syncing 前置判断）
+- [x] `TimeAxis` 每 `pointermove` 全量重绘且遍历全部 marks；配置 `intervalMinutes=1`+`lookbackDays=10` 会生成 14400 档，需设时次数上限 —— 2026-10-19 已修（rAF 合并 + 二分裁剪 + 上限 3000）
+- [x] 抽 `src/utils/datetime.ts`（ISO/紧凑串/格式化）与统一缺测哨兵常量 —— 2026-10-19 已修（新建 datetime.ts + constants.ts）
+- [x] 修文档漂移：端口 5173↔5179、`listRadarFiles` 不存在、AGENTS.md 与 package.json 不一致 —— 2026-10-19 已修
+- [x] `store` 的 `id` 与数组索引双轨、`getProductByIdSafe` 与 `findProduct` 两套查找语义，需统一 —— 2026-10-19 已修（findScreen + 职责注释）
+- [x] 上传文件大小上限、m4/mosaic 网格尺寸上限；fetch 超时；产品色标校验（升序 + 首档透明）；初始化失败 UI 提示 —— 2026-10-19 已修（200MB / 10s 超时 / 严格校验+首档告警 / ElMessage；**网格点数上限已于同日按需求取消**）
+- [P3] 审查报告 P3 剩余项（未纳入本轮）：manifest.json 结构校验与 `hasData=false` 提示、`refresh` 提前返回时的状态残留、`TimeAxis` 初始 spanHours 不自适应、时区隐式假设（一律按部署本地时区解释）
+- [P4] 天地图 key 配置化；popup 内容改 DOM 节点（避免配置注入）；构建 `base` 支持子路径部署
+- [P5] 引入 vitest（三个解析器 + sampleGridValue + buildTimelineTimes/snapNearestTime）、ESLint、CI；依赖升级（vue 3.5 / vite 7 / vue-tsc 2.x，compressjs 移 devDependencies）
 
 # 遗留问题&注意事项
 

@@ -47,6 +47,28 @@ export interface RadarProduct {
 }
 
 /**
+ * 地图底图模式（全局，所有屏共用）：
+ *   - admin ：天地图行政底图（矢量底图 + 中文注记瓦片）
+ *   - border：国界/省界矢量底图（陆地/海洋填色 + 国界、省界线）
+ */
+export type BaseMapMode = 'admin' | 'border';
+
+/**
+ * 色标数值范围（每屏独立；null 表示全范围）。
+ *
+ * 语义为左闭右开 [min, max)：
+ *   - 与色标分档 [value_i, value_{i+1}) 保持一致；
+ *   - max 为 Infinity 表示不限制上限（选中色标最后一档时使用）。
+ * 范围外的格点在渲染时置为缺测（透明），取值时返回 null。
+ */
+export interface ValueRange {
+  /** 范围下限（含） */
+  min: number;
+  /** 范围上限（不含）；Infinity 表示不限制 */
+  max: number;
+}
+
+/**
  * 雷达文件的数据格式：
  *   - 'mosaic'：SWAN 雷达三维拼图（Z_OTHE_RADAMOSAIC_*.bin，头部为 "diamond"）
  *   - 'rstm'  ：CINRAD 单站基数据 RSTM（Z_RADR_I_Z95xx_*.bin.bz2，魔数 "RSTM"）
@@ -87,7 +109,7 @@ export interface AppConfig {
 /**
  * 雷达文件清单项（对应 public/data/manifest.json 中的一条记录）。
  * 由 scripts/prepare-data.cjs 在准备阶段生成，
- * 前端通过 radarApi.listRadarFiles() 读取。
+ * 前端通过 radarApi.fetchRadarFileList() 读取。
  */
 export interface RadarFileMeta {
   /** 原始文件名（.bz2 或 .bin 或 .m4） */
@@ -139,8 +161,16 @@ export interface RadarGrid {
   yDelta: number;
   /** 纬度方向格点数（行数） */
   ySize: number;
-  /** 数据体，行优先一维数组，长度 = xSize * ySize */
-  data: number[];
+  /**
+   * 数据体，行优先一维数组，长度 = xSize * ySize。
+   *
+   * ★ 用 Float32Array 而不是 number[] ★
+   *   SWAN 拼图单层有 168 万点，number[] 约 13.4MB/份，Float32Array 约 6.7MB，
+   *   多屏 + 缓存场景差距显著；且与渲染层 GridDataType.Float32 的内存布局一致，
+   *   避免 QE 内部再做一次数组转换。Float32 约 7 位有效数字，足够覆盖 dBZ 精度。
+   *   注意：渲染层与取值函数只读本数组，禁止就地修改（见 radarRenderer 的说明）。
+   */
+  data: Float32Array;
   /** 是否为“合成兜底”网格（真实数据不可解码时为 true，UI 上会提示） */
   isSynthetic: boolean;
 }

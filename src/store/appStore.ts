@@ -14,7 +14,18 @@
  */
 
 import { reactive, computed } from 'vue';
-import type { AppConfig, RadarFileMeta, RadarProduct } from '../types';
+import type {
+  AppConfig,
+  BaseMapMode,
+  RadarFileMeta,
+  RadarProduct,
+  ValueRange
+} from '../types';
+// 静态产品目录：产品目录尚未加载时提供可用色标的兜底（config 层不反向依赖 store）
+import {
+  getProductById as getStaticProductById,
+  getProductList as getStaticProductList
+} from '../config/products';
 
 /** 布局类型：1 / 2 / 4 / 6 屏 */
 export type LayoutType = 1 | 2 | 4 | 6;
@@ -31,6 +42,11 @@ export interface ScreenState {
   status: string;
   /** 本屏色斑图平滑开关（每屏独立）：true=双线性插值，false=格点填色（原始色块） */
   smooth: boolean;
+  /**
+   * 本屏色标数值范围（每屏独立）：null=全范围。
+   * 范围外的格点在渲染时置为缺测（不显示颜色），见 utils/range.ts。
+   */
+  valueRange: ValueRange | null;
 }
 
 /** 全局应用状态形状 */
@@ -50,6 +66,8 @@ export interface AppState {
   syncPlay: boolean;
   /** 多屏地图联动开关：true=任一屏缩放/移动地图时，其余屏同步相同视野 */
   syncMap: boolean;
+  /** 地图底图模式（全局）：admin=天地图行政底图；border=国界/省界矢量底图 */
+  baseMap: BaseMapMode;
 }
 
 /** 创建 n 个屏的初始配置 */
@@ -59,7 +77,8 @@ function createScreens(n: number): ScreenState[] {
     productId: 'Z', // 默认产品 = 基本反射率
     time: '',
     status: '',
-    smooth: false
+    smooth: false,
+    valueRange: null // 默认全范围（不裁剪色标）
   }));
 }
 
@@ -75,10 +94,24 @@ export const appState = reactive<AppState>({
   activeScreenId: 0,
   playing: false,
   syncPlay: true,
-  syncMap: true
+  syncMap: true,
+  baseMap: 'admin'
 });
 
 /* ─────────────────────────── mutations ─────────────────────────── */
+
+/**
+ * 按屏 id 查找 ScreenState。
+ *
+ * ★ 禁止用 `screens[id]` 直接索引 ★
+ *   当前布局下 id 恰好等于数组下标，但那是巧合而不是契约。
+ *   一旦后续加入“删除单屏 / 调整顺序 / 恢复布局”，下标与 id 就会错位，
+ *   所有 mutation 都会改错屏。统一走本函数后，id 才是稳定标识，
+ *   setLayout 只需保证 id 唯一。
+ */
+function findScreen(id: number): ScreenState | undefined {
+  return appState.screens.find((s) => s.id === id);
+}
 
 /**
  * 切换布局：增减 screens 数组长度，尽量保留已有屏的配置。
@@ -87,10 +120,26 @@ export function setLayout(layout: LayoutType): void {
   appState.layout = layout;
   const cur = appState.screens;
   if (cur.length < layout) {
-    const base = cur[cur.length - 1] || { productId: 'Z', time: '', status: '', smooth: false };
+    const base = cur[cur.length - 1] || {
+      productId: 'Z',
+      time: '',
+      status: '',
+      smooth: false,
+      valueRange: null
+    };
+    // 新屏 id 取“当前最大 id + 1”：id 只要求唯一，不要求等于数组下标
+    let nextId = cur.reduce((max, s) => Math.max(max, s.id), -1) + 1;
     while (cur.length < layout) {
-      // 新增屏沿用上一屏的产品/时间/平滑开关作为初始值
-      cur.push({ id: cur.length, productId: base.productId, time: base.time, status: '', smooth: base.smooth });
+      // 新增屏沿用上一屏的产品/时间/平滑/范围作为初始值
+      // （范围对象复制一份，避免多屏共享同一引用）
+      cur.push({
+        id: nextId++,
+        productId: base.productId,
+        time: base.time,
+        status: '',
+        smooth: base.smooth,
+        valueRange: base.valueRange ? { ...base.valueRange } : null
+      });
     }
   } else if (cur.length > layout) {
     cur.splice(layout); // 截断多余屏（地图实例在组件卸载时销毁）
@@ -98,14 +147,14 @@ export function setLayout(layout: LayoutType): void {
   }
 }
 
-/** 把某屏设为激活屏（点击屏幕时调用） */
+/** 把某屏设为激活屏（点击屏幕时调用）；id 不存在时忽略 */
 export function setActiveScreen(id: number): void {
-  if (id >= 0 && id < appState.screens.length) appState.activeScreenId = id;
+  if (findScreen(id)) appState.activeScreenId = id;
 }
 
 /** 为指定屏设置产品（左侧产品列表作用于激活屏） */
 export function setScreenProduct(id: number, productId: string): void {
-  const s = appState.screens[id];
+  const s = findScreen(id);
   if (s) s.productId = productId;
 }
 
@@ -114,8 +163,17 @@ export function setScreenProduct(id: number, productId: string): void {
  * true=双线性插值渲染（平滑），false=格点填色（不平滑，保持分档色块）。
  */
 export function setScreenSmooth(id: number, smooth: boolean): void {
-  const s = appState.screens[id];
+  const s = findScreen(id);
   if (s) s.smooth = smooth;
+}
+
+/**
+ * 设置本屏色标显示范围（null=恢复全范围）。
+ * 范围外的格点在渲染时置为缺测（透明），取值时返回 null。
+ */
+export function setScreenRange(id: number, range: ValueRange | null): void {
+  const s = findScreen(id);
+  if (s) s.valueRange = range;
 }
 
 /**
@@ -127,7 +185,7 @@ export function setScreenTime(id: number, time: string): void {
   if (appState.syncPlay) {
     for (const s of appState.screens) s.time = time;
   } else {
-    const s = appState.screens[id];
+    const s = findScreen(id);
     if (s) s.time = time;
   }
 }
@@ -184,28 +242,66 @@ export function setSyncMap(v: boolean): void {
   appState.syncMap = v;
 }
 
+/**
+ * 设置地图底图模式（全局）。
+ * 状态只负责 UI 高亮；真正的图层切换由 mapManager.applyBaseMapToAll 完成
+ * （沿用“状态在 store、行为在 mapManager”的约定，render 层不反向依赖 store）。
+ */
+export function setBaseMap(mode: BaseMapMode): void {
+  appState.baseMap = mode;
+}
+
 /** 更新某屏加载状态提示 */
 export function setScreenStatus(id: number, status: string): void {
-  const s = appState.screens[id];
+  const s = findScreen(id);
   if (s) s.status = status;
 }
 
 /**
- * 按产品代码查找产品（找不到时回退到第一个产品，保证永不返回 undefined）。
- * 供渲染组件安全取用。
+ * 按产品代码取产品元信息（UI / 渲染侧唯一入口，永不返回 undefined）。
+ *
+ * 查找顺序：
+ *   1) 已加载的产品目录（appState.products，即 fetchProductList 的返回值）；
+ *   2) 启动早期目录尚未写入时，回退内置静态目录（src/config/products.ts）。
+ *
+ * ★ 必须回退到真实产品，不能返回 colorStops 为空的占位对象 ★
+ *   渲染层用 `colorStops.length - 1` 作为色例终止档号，空数组会得到 -1，
+ *   QE 的 BitmapColorScaleGL 收到非法档号可能直接抛错。
+ *
+ * 与 productApi.findProduct 的分工（store 不 import api 层，避免反向依赖）：
+ *   - productApi.findProduct：数据访问层入口，服务器目录缓存优先，允许 undefined；
+ *   - 本函数：UI 入口，保证返回可用色标；两者的最终兜底都是静态目录。
  */
 export function getProductByIdSafe(id: string): RadarProduct {
-  return (
-    appState.products.find((p) => p.id === id) ??
-    appState.products[0] ?? { id, name: id, unit: '', colorStops: [] }
-  );
+  const loaded = appState.products.find((p) => p.id === id) ?? appState.products[0];
+  if (loaded) return loaded;
+
+  // 目录未加载（启动早期）→ 静态目录兜底，保证色标非空
+  const staticHit = getStaticProductById(id) ?? getStaticProductList()[0];
+  if (staticHit) return staticHit;
+
+  // 理论上不可达（静态目录固定非空），仅为类型收窄保留
+  return { id, name: id, unit: '', type: 'obs', colorStops: [] };
 }
 
 /* ─────────────────────────── computed ─────────────────────────── */
 
-/** 当前激活屏的 ScreenState（组件里用 computed 引用以保持响应性） */
+/**
+ * 空屏兜底：setLayout 保证至少 1 屏，这里仅用于满足类型收窄，
+ * 正常流程不会返回该对象。
+ */
+const EMPTY_SCREEN: ScreenState = {
+  id: 0,
+  productId: 'Z',
+  time: '',
+  status: '',
+  smooth: false,
+  valueRange: null
+};
+
+/** 当前激活屏的 ScreenState（按 id 查找，不依赖数组下标） */
 export const activeScreen = computed<ScreenState>(
-  () => appState.screens[appState.activeScreenId]
+  () => findScreen(appState.activeScreenId) ?? appState.screens[0] ?? EMPTY_SCREEN
 );
 
 /**

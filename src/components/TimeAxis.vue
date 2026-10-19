@@ -17,6 +17,8 @@
 -->
 <script setup lang="ts">
 import { onMounted, onBeforeUnmount, ref, watch, computed, nextTick } from 'vue';
+// 时间换算统一走 utils/datetime（与时间轴生成、文件模板保持同一格式源）
+import { isoToMs, msToISO, msToText, pad2 } from '../utils/datetime';
 
 const props = defineProps<{
   /** 时间轴全部时刻（ISO 串，升序） */
@@ -75,28 +77,17 @@ let timesMs: number[] = [];
 let marksMs: number[] = [];
 
 /* ─────────────── 时间换算工具 ─────────────── */
-const p2 = (n: number): string => String(n).padStart(2, '0');
-const toMs = (iso: string): number => new Date(iso).getTime();
-
-/** ms → 本地 ISO 串 'YYYY-MM-DDTHH:mm:ss'（与平台时刻格式一致） */
-function fmtISO(ms: number): string {
-  const d = new Date(ms);
-  return `${d.getFullYear()}-${p2(d.getMonth() + 1)}-${p2(d.getDate())}T${p2(d.getHours())}:${p2(d.getMinutes())}:${p2(d.getSeconds())}`;
-}
-
-/** ms → 'YYYY-MM-DD HH:mm:ss'（画布文字） */
-function fmtFull(ms: number): string {
-  return fmtISO(ms).replace('T', ' ');
-}
-
-/** ms → 'YYYY-MM-DD HH:mm'（悬停提示文字，到分钟） */
-function fmtMin(ms: number): string {
-  return fmtISO(ms).replace('T', ' ').slice(0, 16);
-}
+/*
+ * 本组件不再自带 ISO 生成/解析实现：
+ *   - isoToMs  ：ISO → 毫秒（缓存 times/marks、计算当前时刻）
+ *   - msToISO  ：毫秒 → ISO（吸附后 emit 给父组件）
+ *   - msToText ：毫秒 → 画布文字（悬停到分钟 / 当前时刻到秒）
+ *   - pad2     ：刻度文字补零
+ */
 
 /** 当前中心时刻（ms） */
 const currentMs = computed(() =>
-  props.current ? toMs(props.current) : Math.floor(Date.now() / 60000) * 60000
+  props.current ? isoToMs(props.current) : Math.floor(Date.now() / 60000) * 60000
 );
 
 /** 可缩放的最大跨度（小时）：时间轴总跨度向上取 4 的倍数，且不小于 24 */
@@ -112,6 +103,21 @@ const PAD_X = 10;
 
 function msPerPx(): number {
   return (spanHours * 3600000) / Math.max(1, cssWidth - PAD_X * 2);
+}
+
+/**
+ * 返回第一个 >= target 的下标（要求 arr 升序）。
+ * 用于把“可见时间区间”映射到 marks 下标，避免每帧遍历上万条标记。
+ */
+function lowerBound(arr: number[], target: number): number {
+  let lo = 0;
+  let hi = arr.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (arr[mid] < target) lo = mid + 1;
+    else hi = mid;
+  }
+  return lo;
 }
 
 /** 吸附到最近的可用时次（二分查找） */
@@ -161,9 +167,12 @@ function draw(): void {
   const msAt = (x: number): number => firstMs + (x - PAD_X) * mpp;
 
   // 有文件的时次标记（顶条绿色小刻度）
+  // marksMs 已升序：二分定位可见区间起点，只绘制可见标记后即 break。
+  // 配置失误时 marks 可能上万条，全量遍历会拖慢每一帧。
   ctx.fillStyle = COLORS.meddleLine;
-  for (const ms of marksMs) {
-    if (ms < firstMs || ms > lastMs) continue;
+  for (let i = lowerBound(marksMs, firstMs); i < marksMs.length; i++) {
+    const ms = marksMs[i];
+    if (ms > lastMs) break;
     ctx.fillRect(xFor(ms) - 1, 0, 2, 20);
   }
 
@@ -179,8 +188,8 @@ function draw(): void {
     const midnight = d.getHours() === 0 && d.getMinutes() === 0;
     const text =
       midnight || step >= 86400000
-        ? `${p2(d.getMonth() + 1)}-${p2(d.getDate())}`
-        : `${p2(d.getHours())}:${p2(d.getMinutes())}`;
+        ? `${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`
+        : `${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
     ctx.beginPath();
     ctx.moveTo(x, 0);
     ctx.lineTo(x, 20);
@@ -198,7 +207,7 @@ function draw(): void {
     ctx.lineTo(hoverX, 45);
     ctx.stroke();
     ctx.fillStyle = COLORS.moveDate;
-    const hoverText = fmtMin(msAt(hoverX));
+    const hoverText = msToText(msAt(hoverX), false);
     ctx.fillText(hoverText, Math.min(hoverX + 4, cssWidth - hoverText.length * 6), 56);
   }
 
@@ -211,10 +220,27 @@ function draw(): void {
     ctx.lineTo(curX, 30);
     ctx.stroke();
     ctx.fillStyle = COLORS.meddleLine;
-    const curText = fmtFull(currentMs.value);
+    const curText = msToText(currentMs.value, true);
     const tx = Math.min(Math.max(curX - curText.length * 3.5, 2), cssWidth - curText.length * 7 - 2);
     ctx.fillText(curText, tx, 44);
   }
+}
+
+/** 待执行的重绘帧回调 id（0 表示当前帧没有排队） */
+let drawRaf = 0;
+
+/**
+ * 合并同一帧内的多次重绘请求。
+ *
+ * pointermove 在高刷新率设备上可达每秒上百次，而悬停线只需要每帧画一次。
+ * 拖拽平移同理：指针事件远多于屏幕刷新率，逐事件重绘是纯浪费。
+ */
+function scheduleDraw(): void {
+  if (drawRaf) return;
+  drawRaf = requestAnimationFrame(() => {
+    drawRaf = 0;
+    draw();
+  });
 }
 
 /** 尺寸变化时重设画布物理像素（dpr 适配高清屏）并重绘 */
@@ -248,7 +274,8 @@ function onPointerMove(e: PointerEvent): void {
     viewMs = Math.min(timesMs[timesMs.length - 1], Math.max(timesMs[0], raw));
     dragMoved = true;
   }
-  draw();
+  // 指针事件频率高于屏幕刷新率，重绘交给 rAF 合并
+  scheduleDraw();
 }
 
 function onPointerUp(e: PointerEvent): void {
@@ -262,7 +289,7 @@ function onPointerUp(e: PointerEvent): void {
     : snapToTimes(centerMsNow + (e.offsetX - cssWidth / 2) * msPerPx());
   if (target !== currentMs.value) {
     emitGuard = true;
-    emit('change', fmtISO(target));
+    emit('change', msToISO(target, true));
     void nextTick(() => {
       emitGuard = false;
     });
@@ -285,8 +312,10 @@ function onWheel(e: WheelEvent): void {
 watch(
   () => [props.times, props.marks] as unknown,
   () => {
-    timesMs = props.times.map(toMs);
-    marksMs = (props.marks ?? []).map(toMs);
+    // 二分吸附（snapToTimes）与标记裁剪（lowerBound）都要求升序。
+    // store 侧虽已排序，这里再兜一次底，避免上游传入乱序数组导致吸附错位。
+    timesMs = props.times.map(isoToMs).sort((a, b) => a - b);
+    marksMs = (props.marks ?? []).map(isoToMs).sort((a, b) => a - b);
     if (spanHours > maxSpanHours.value) spanHours = maxSpanHours.value;
     viewMs = null; // 时间轴重建后视图重新居中
     draw();
@@ -310,6 +339,11 @@ onMounted(() => {
 onBeforeUnmount(() => {
   resizeObserver?.disconnect();
   resizeObserver = null;
+  // 取消排队中的重绘：组件已卸载，回调再访问 canvas 没有意义
+  if (drawRaf) {
+    cancelAnimationFrame(drawRaf);
+    drawRaf = 0;
+  }
 });
 </script>
 

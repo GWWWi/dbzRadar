@@ -17,12 +17,14 @@
 -->
 <script setup lang="ts">
 import { onMounted, onBeforeUnmount, watch } from 'vue';
+import { ElMessage } from 'element-plus';
 import Toolbar from './components/Toolbar.vue';
 import ProductList from './components/ProductList.vue';
 import RadarScreen from './components/RadarScreen.vue';
 import Timeline from './components/Timeline.vue';
 import {
   appState,
+  activeScreen,
   timelineTimes,
   setScreenTime,
   setProducts,
@@ -56,11 +58,17 @@ onMounted(async () => {
     }
     // 获取当前产品最新时间（假数据接口）→ 吸附到时间轴最近时次，
     // 赋值到时间轴与时间选择控件（setScreenTime 经 jumpValue watch 同步控件）
-    const latest = await fetchLatestTime(appState.screens[appState.activeScreenId]?.productId ?? 'Z');
+    const latest = await fetchLatestTime(activeScreen.value?.productId ?? 'Z');
     const snapped = snapNearestTime(timelineTimes.value, latest);
     if (snapped) setScreenTime(appState.activeScreenId, snapped);
   } catch (e) {
     console.error('[App] 初始化数据加载失败：', e);
+    // 初始化失败必须有可见反馈：否则页面只是空产品列表 + 空时间轴，
+    // 用户无法判断是“没有数据”还是“服务不可用”。
+    // 注意：产品目录内部已有静态回退，这里通常捕获的是清单/配置请求失败。
+    ElMessage.error(
+      e instanceof Error ? e.message : '应用初始化失败，请检查数据服务是否可用'
+    );
   }
 });
 
@@ -77,8 +85,11 @@ watch(
       timer = window.setInterval(() => {
         const times = timelineTimes.value;
         if (times.length === 0) return;
+        // 上一时次仍在加载时不推进：避免 800ms 内堆积多个请求/解析任务
+        // （缓存命中时通常一帧内完成，不会影响正常播放节奏）
+        if (appState.screens.some((s) => s.status === '加载中…')) return;
         // 取当前屏时间在时间轴上的下一个时次（到尾则回头）
-        const cur = times.indexOf(appState.screens[appState.activeScreenId].time);
+        const cur = times.indexOf(activeScreen.value.time);
         const next = times[(cur + 1 + times.length) % times.length];
         setScreenTime(appState.activeScreenId, next);
       }, 800);

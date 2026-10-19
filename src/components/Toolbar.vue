@@ -10,9 +10,17 @@
     - 播放 / 暂停动画按钮。
 -->
 <script setup lang="ts">
-import { appState, setLayout, setPlaying, setSyncPlay, setSyncMap } from '../store/appStore';
-import { setMapLink } from '../render/mapManager';
+import {
+  appState,
+  setLayout,
+  setPlaying,
+  setSyncPlay,
+  setSyncMap,
+  setBaseMap
+} from '../store/appStore';
+import { setMapLink, applyBaseMapToAll } from '../render/mapManager';
 import type { LayoutType } from '../store/appStore';
+import type { BaseMapMode } from '../types';
 
 /** 可选布局 */
 const layouts: LayoutType[] = [1, 2, 4, 6];
@@ -21,6 +29,15 @@ const layouts: LayoutType[] = [1, 2, 4, 6];
 function onToggleMapLink(v: boolean): void {
   setSyncMap(v);
   setMapLink(v);
+}
+
+/**
+ * 底图切换：状态进 store（按钮高亮），行为由 mapManager 应用到所有屏。
+ * admin=天地图行政底图；border=国界/省界矢量底图。
+ */
+function onSelectBaseMap(mode: BaseMapMode): void {
+  setBaseMap(mode);
+  applyBaseMapToAll(mode);
 }
 </script>
 
@@ -40,6 +57,27 @@ function onToggleMapLink(v: boolean): void {
         @click="setLayout(n)"
       >
         {{ n }}屏
+      </button>
+    </div>
+
+    <!-- 底图切换：行政（天地图）/ 国界（矢量填色 + 国界/省界线） -->
+    <div class="toolbar-group">
+      <span class="toolbar-label">底图</span>
+      <button
+        class="btn"
+        :class="{ 'btn-active': appState.baseMap === 'admin' }"
+        title="天地图行政底图（矢量 + 中文注记）"
+        @click="onSelectBaseMap('admin')"
+      >
+        行政
+      </button>
+      <button
+        class="btn"
+        :class="{ 'btn-active': appState.baseMap === 'border' }"
+        title="国界/省界矢量底图（陆地/海洋填色 + 界线）"
+        @click="onSelectBaseMap('border')"
+      >
+        国界
       </button>
     </div>
 

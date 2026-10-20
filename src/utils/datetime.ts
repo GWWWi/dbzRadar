@@ -3,34 +3,65 @@
  *
  * 平台内部统一用「不带时区标记的 ISO 串」表示时刻：
  *   'yyyy-MM-ddTHH:mm:ss'（如 '2024-06-21T14:00:00'）
- * 语义上按本地时区（部署环境为北京时间）解释，不做 UTC 换算 ——
- * 与数据文件“北京时间直存”的约定保持一致。
+ * 语义固定为**北京时间（Asia/Shanghai）**，与机器本地时区无关。
  *
- * 为什么集中在这里：
- *   原先 configApi / radarApi / TimeAxis / Timeline 各写了一份 ISO 生成与
- *   紧凑串换算。时间轴生成的时刻串必须与文件地址模板、控件 value 完全同源，
- *   任何一处格式漂移都会导致“时间轴有时次、却查不到文件”。
- *   ★ 新增时间格式需求请在本文件扩展，禁止在业务文件里再写一份。★
+ * 为什么这样做：
+ *   原实现用 getFullYear()/getHours() 格式化、用 new Date(str) 解析，
+ *   两者都依赖「浏览器本地时区」。而 mosaic 头部又手写 setUTCHours(+8)。
+ *   结果只在「系统时区 = 东八区」时自洽；部署到 UTC 容器或海外机器后，
+ *   时间轴的「最新时次」会整体错 8 小时，且同屏出现两套时间语义。
+ *
+ * ★ 新增时间格式需求请在本文件扩展，禁止在业务文件里再写一份。★
  */
+
+/** 平台统一展示时区（中国气象数据按北京时间存储） */
+export const PLATFORM_TZ = 'Asia/Shanghai';
 
 /** 两位补零（00~99） */
 export function pad2(n: number): string {
   return String(n).padStart(2, '0');
 }
 
+/** 'sv-SE' 的格式恰好是 'YYYY-MM-DD HH:mm:ss'，省去手工拼装与补零 */
+const ISO_FORMATTER = new Intl.DateTimeFormat('sv-SE', {
+  timeZone: PLATFORM_TZ,
+  year: 'numeric',
+  month: '2-digit',
+  day: '2-digit',
+  hour: '2-digit',
+  minute: '2-digit',
+  second: '2-digit',
+  hour12: false
+});
+
 /**
- * 毫秒时间戳 → ISO 串（本地时区）。
+ * 毫秒时间戳 → 目标时区相对 UTC 的偏移（毫秒）。
+ * 用「把 UTC 时刻按目标时区格式化，再当作 UTC 解析」的差值求得。
+ */
+function tzOffsetMs(utcMs: number): number {
+  const parts = ISO_FORMATTER.formatToParts(new Date(utcMs));
+  const map: Record<string, number> = {};
+  for (const part of parts) {
+    if (part.type !== 'literal') map[part.type] = Number(part.value);
+  }
+  const asUtc = Date.UTC(
+    map.year, map.month - 1, map.day,
+    map.hour % 24, map.minute, map.second
+  );
+  return asUtc - utcMs;
+}
+
+/**
+ * 毫秒时间戳 → ISO 串（固定按北京时间输出，与机器时区无关）。
  *
  * @param ms          时间戳
  * @param withSeconds 是否输出秒位。false 时秒固定为 00
  *                    （时间轴/配置时刻均为整分钟语义，避免秒位造成查不到文件）
  */
 export function msToISO(ms: number, withSeconds = false): string {
-  const d = new Date(ms);
-  const head =
-    `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}` +
-    `T${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
-  return withSeconds ? `${head}:${pad2(d.getSeconds())}` : `${head}:00`;
+  if (!Number.isFinite(ms)) return '';
+  const text = ISO_FORMATTER.format(new Date(ms)).replace(' ', 'T');
+  return withSeconds ? text : `${text.slice(0, 16)}:00`;
 }
 
 /**
@@ -42,7 +73,16 @@ export function msToText(ms: number, withSeconds = false): string {
 
 /** ISO 串 → 毫秒；非法串返回 NaN（与 new Date().getTime() 行为一致） */
 export function isoToMs(iso: string): number {
-  return new Date(iso).getTime();
+  if (!iso) return NaN;
+  // 已显式带时区（Z / ±HH:mm）的串交给原生解析，不做二次换算
+  if (/[zZ]$|[+-]\d{2}:?\d{2}$/.test(iso)) return new Date(iso).getTime();
+
+  const naive = iso.replace(' ', 'T');
+  // 先当作 UTC 解析，再减去该时刻在目标时区的偏移，得到真实时间戳。
+  // 不能用 new Date(naive)：它按**浏览器本地时区**解释，正是错 8 小时的根源。
+  const asUtc = Date.parse(`${naive}Z`);
+  if (Number.isNaN(asUtc)) return NaN;
+  return asUtc - tzOffsetMs(asUtc);
 }
 
 /**

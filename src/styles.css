@@ -494,19 +494,16 @@ button {
   --el-component-size: 20px;
 }
 
+/* 时间轴文字：统一 20px 行高，与画布顶部时间条对齐 */
 .timeline-pick-label {
   line-height: 20px;
+  color: #8fa3ba;
+  font-size: 12px;
+  white-space: nowrap;
 }
 
 .timeline-time {
   line-height: 20px;
-}
-
-.timeline-count {
-  line-height: 20px;
-}
-
-.timeline-time {
   font-family: Consolas, monospace;
   font-size: 14px;
   color: #7fd0ff;
@@ -515,16 +512,9 @@ button {
 }
 
 .timeline-count {
+  line-height: 20px;
   color: #8fa3ba;
   font-size: 12px;
-}
-
-/* 时间选择控件（Element Plus，配置模式：选预报起报时间 / 实况结束时间）；
-   尺寸统一 20px 的规则见底部时间轴分节（--el-component-size） */
-.timeline-pick-label {
-  color: #8fa3ba;
-  font-size: 12px;
-  white-space: nowrap;
 }
 
 /* 宽度保证文字完整显示（"2022-04-12 00:00" + 箭头/图标） */

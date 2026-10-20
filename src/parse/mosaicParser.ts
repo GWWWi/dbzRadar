@@ -40,6 +40,8 @@
 import type { RadarGrid, RadarProduct } from '../types';
 // 缺测哨兵统一由 constants 提供
 import { UNDEF } from '../constants';
+// 时刻格式化统一走 utils/datetime（固定 Asia/Shanghai，不依赖机器时区）
+import { msToISO } from '../utils/datetime';
 
 /** 头部字节数 */
 const HDR_BYTES = 1024;
@@ -124,15 +126,13 @@ export function parseRADAMOSAIC(
     );
   }
 
-  // —— 2) 观测时刻：头部为 UTC，转成北京时间（UTC+8）的 ISO 串 ——
+  // —— 2) 观测时刻：头部存的是 UTC，按统一规则格式化为北京时间 ——
   let time = opts.time || '';
   if (!time && year > 0) {
-    const d = new Date(Date.UTC(year, month - 1, day, hour, minute, 0));
-    d.setUTCHours(d.getUTCHours() + 8);
-    const p = (n: number) => String(n).padStart(2, '0');
-    time =
-      d.getUTCFullYear() + '-' + p(d.getUTCMonth() + 1) + '-' + p(d.getUTCDate()) +
-      'T' + p(d.getUTCHours()) + ':' + p(d.getUTCMinutes()) + ':' + p(d.getUTCSeconds());
+    // 不再手写 setUTCHours(+8) 与补零：头部时间是 UTC 毫秒，
+    // 由 msToISO 统一按 Asia/Shanghai 输出，避免与时间轴出现两套语义。
+    const headerMs = Date.UTC(year, month - 1, day, hour, minute, 0);
+    time = msToISO(headerMs, true);
   }
 
   // —— 3) 定位数据区并推断每样本字节数（1 或 2） ——

@@ -152,10 +152,33 @@ export function setActiveScreen(id: number): void {
   if (findScreen(id)) appState.activeScreenId = id;
 }
 
-/** 为指定屏设置产品（左侧产品列表作用于激活屏） */
+/** 产品是否真实存在于服务端目录或静态目录中 */
+function productExists(id: string): boolean {
+  return (
+    appState.products.some((p) => p.id === id) || Boolean(getStaticProductById(id))
+  );
+}
+
+/**
+ * 为指定屏设置产品（左侧产品列表作用于激活屏）。
+ *
+ * 两道保护：
+ *   1. 未知产品直接拒绝——原实现不校验，服务端下架某产品后屏的 productId
+ *      仍指向旧值，屏头/图例显示的是兜底产品的名字，而 sc.productId 还是旧的，
+ *      两个不同旧 id 之间切换时还会被判定为「产品没变」而不重绘。
+ *   2. 切产品时清空 valueRange——范围是相对当前产品色标的绝对数值，
+ *      从 Z（-10~70）切到 V（-30~30）后旧范围会把几乎全部格点判为缺测，
+ *      整屏空白且图例滑块被静默 clamp。
+ */
 export function setScreenProduct(id: number, productId: string): void {
   const s = findScreen(id);
-  if (s) s.productId = productId;
+  if (!s || s.productId === productId) return;
+  if (!productExists(productId)) {
+    console.warn(`[store] 忽略未知产品：${productId}`);
+    return;
+  }
+  s.productId = productId;
+  s.valueRange = null;
 }
 
 /**
@@ -273,12 +296,19 @@ export function setScreenStatus(id: number, status: string): void {
  *   - 本函数：UI 入口，保证返回可用色标；两者的最终兜底都是静态目录。
  */
 export function getProductByIdSafe(id: string): RadarProduct {
-  const loaded = appState.products.find((p) => p.id === id) ?? appState.products[0];
+  const loaded = appState.products.find((p) => p.id === id);
   if (loaded) return loaded;
 
-  // 目录未加载（启动早期）→ 静态目录兜底，保证色标非空
-  const staticHit = getStaticProductById(id) ?? getStaticProductList()[0];
+  const staticHit = getStaticProductById(id);
   if (staticHit) return staticHit;
+
+  // 未命中：显式告警后再兜底到目录第一项。
+  // 原实现静默 `?? appState.products[0]`，调用方无法区分「命中」与「回退」，
+  // 于是屏头、图例、色标用的是兜底产品，而 sc.productId 仍是旧 id，
+  // 三者口径不一致且难以排查。
+  console.warn(`[store] 未知产品 ${id}，回退到默认产品`);
+  const fallback = appState.products[0] ?? getStaticProductList()[0];
+  if (fallback) return fallback;
 
   // 理论上不可达（静态目录固定非空），仅为类型收窄保留
   return { id, name: id, unit: '', type: 'obs', colorStops: [] };

@@ -5,7 +5,9 @@
 - 目录结构：
   - `src/parse/`：解析层，把二进制/文本解析为统一网格结构 RadarGrid（mosaic / rstm / m4 三种格式）
   - `src/api/`：接口层，产品列表与雷达文件清单、取数
-  - `src/render/`：渲染层，`radarRenderer.ts` 把 RadarGrid 渲染为 LPixelLayer 色斑图（bitmap 格点填色、不平滑）；`mapManager.ts` 创建地图与天地图底图
+  - `src/render/`：渲染层，`radarRenderer.ts` 把 RadarGrid 渲染为 LPixelLayer 色斑图（bitmap 格点填色 / pixel1 平滑，支持色标范围裁剪）；`mapManager.ts` 创建地图、切换底图（天地图行政 / 国界矢量）、多屏视野联动
+  - `src/mapBorder/`：国界底图 GeoJSON（worldGJ 179 国 / chinaGJ 全国 / chinaSJ 42 省，合计约 4MB，`?url` 按需加载）
+  - `src/utils/`：datetime（时间）、http（超时 fetch）、range（色标范围换算）
   - `src/store/appStore.ts`：Vue reactive 单例全局状态（多屏 / 产品 / 时间 / 播放）
   - `src/components/`：Toolbar / ProductList / Timeline / RadarScreen（单屏容器）/ Legend
   - `src/utils/datetime.ts`：时间格式转换唯一实现（ISO / 紧凑串 / 显示文本）
@@ -16,6 +18,21 @@
 - 数据契约：`src/types/index.ts` 中 RadarGrid —— x 经度/y 纬度，data 行优先一维数组，yDelta<0 表示第 0 行在最北；undef 为缺测哨兵值
 
 # 迭代变更日志（按时间倒序）
+
+【2026-10-20 本轮改动（项目整理：文档同步 + 样式去重）】
+
+1. 修改文件：`CLAUDE.md`、`docs/PRODUCT_GUIDE.md`、`src/styles.css`
+
+2. 修改目的：让文档与当前实现一致（渲染签名、副本过滤、色标范围、底图），合并时间轴区域的重复 CSS 声明。
+
+3. 关键规则沉淀：
+   - `PRODUCT_GUIDE.md` 同步 `renderRadar(..., smooth, range)`、`updateRadarProduct/updateRadarRange/updateRadarSmooth`、`sampleGridValue(..., minVisible, range)`；新增“运行时色标显示范围”小节；最小示例改用 `applyBaseMap`
+   - 文档明确：渲染在**数据副本**上过滤，`grid.data` 不被修改；`fetchRadarGrid` 返回的网格可能被多屏共享，必须只读
+   - `styles.css` 合并 `.timeline-pick-label` / `.timeline-time` / `.timeline-count` 的重复声明（原各定义两次）
+   - CLAUDE.md 项目基础信息补充 `mapBorder/` 与 `utils/`；“遗留问题”移除已过期的“未做浏览器验证”条目
+   - 死代码/冗余仅记录不删除（项目规则）：`Timeline.vue` 的 `defineExpose({ step })`、`radarApi.guessFormat` 死分支、`ProductList.vue` 自赋值、仅内部使用的导出（`TIANDITU_KEY` / `addTiandituBase` / `M4_UNDEF_RAW`）
+   - `dist/` 构建产物清理未执行（等待授权），已被 `.gitignore` 忽略，不影响仓库
+   - 验证方式：`npx vue-tsc --noEmit` 通过
 
 【2026-10-19 本轮改动（数据加载后自动定位地图）】
 
@@ -570,4 +587,4 @@
   2) 3 个 .bz2（Z9536_120000、Z9543_160000、Z9543_180000）首 4 字节全 0，非合法 bz2 也非 RSTM，hasData=false 走合成兜底（属数据本身问题）
   3) 脚本会用 0 字节覆盖已有 .bin.bin（解压失败时），建议加"已有非空产物则跳过解压"保护
 - ★ 点击取值弹窗数值与色块颜色不一致（用户截图：色块品红 60~65 档，弹窗显示 54.0 dBZ）。已排查结论：QE BitmapColorScaleGL.createFromStopRules 的 value→颜色分段映射验证正确（54 → 红档）；疑似 sampleGridValue 的 Math.round 最近邻取样与 QE bitmap 渲染的格点定位（格点=像元中心还是左下角锚点）存在半格偏移，或 yDelta<0 行序理解不一致。待继续定位（可用真实数据对比点击点邻域格点值与渲染色档）。
-- 本轮时间轴/配置改造后未做浏览器端手工验证（无测试框架，仅 vue-tsc 通过）；建议 dev 起服后验证：配置模式时间选择控件重生成、模板模式 404 提示、清单回退模式（无 config.json）demo 行为不变。
+- 时间轴 / 配置 / 底图 / 色标范围 / 分屏切换等功能已通过多轮 `vue-tsc` 与 `npm run build` 验证，浏览器交互项已由用户手工确认；无自动化测试框架（P5 待补 vitest）。

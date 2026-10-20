@@ -68,6 +68,15 @@ let fittedBounds: L.LatLngBounds | null = null;
 let refreshToken = 0;
 
 /**
+ * 当前在途取数的 AbortController。
+ *
+ * refreshToken 只能「丢弃结果」，无法停止已经开始的下载：单个 mosaic 文件
+ * 达 35MB，快速拖时间轴时多个请求会同时占用带宽与内存。这里在每次取数前
+ * abort 上一个请求，配合 refreshToken 形成「取消 + 丢弃」双保险。
+ */
+let inflight: AbortController | null = null;
+
+/**
  * 清空本屏图层与取值数据。
  * 用于“该时次无数据”“加载失败”两种场景：必须同时清掉旧画面与 layerGrid，
  * 否则屏幕仍显示上一时次的色斑图，点击取值还会返回旧数值，与状态提示矛盾。
@@ -190,7 +199,10 @@ async function refresh(): Promise<void> {
 
     // 时间变化或首次 → 拉取并解析数据，重建图层
     setScreenStatus(props.screenId, '加载中…');
-    const grid = await fetchRadarGrid(file, product.id);
+    // 取消上一次仍在下载的请求：否则切时次时会有多个 35MB 文件并行下载
+    inflight?.abort();
+    inflight = new AbortController();
+    const grid = await fetchRadarGrid(file, product.id, inflight.signal);
 
     // 请求期间用户又切了时次 / 产品（或上传了文件）→ 本次结果作废
     if (token !== refreshToken) return;
@@ -212,6 +224,8 @@ async function refresh(): Promise<void> {
   } catch (e) {
     // 过期请求的失败同样不能影响当前屏的状态
     if (token !== refreshToken) return;
+    // 主动取消（切时次/卸载）不是错误：保留当前画面，也不要弹“加载失败”
+    if (e instanceof DOMException && e.name === 'AbortError') return;
     console.error('[RadarScreen] 渲染失败：', e);
     // 失败时保留旧画面会让用户误读成“该时次的数据”，因此一并清空
     clearLayer();
@@ -340,6 +354,9 @@ onMounted(() => {
 onBeforeUnmount(() => {
   // 作废所有在途请求：销毁后再回来的响应不得继续操作已移除的地图/图层
   refreshToken++;
+  // 同时真正取消下载，避免卸载后仍有一个 35MB 文件在后台跑完
+  inflight?.abort();
+  inflight = null;
 
   // 停止尺寸监听并取消待执行的 invalidateSize，避免销毁后继续操作地图
   if (mapResizeRaf) {

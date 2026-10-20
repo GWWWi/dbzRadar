@@ -38,7 +38,7 @@ import { parseRSTM } from '../parse/cinradParser';
 import { parseRADAMOSAIC, isRADAMOSAIC } from '../parse/mosaicParser';
 import { isMicapsM4, parseMicapsM4 } from '../parse/micapsM4Parser';
 import { findProduct } from './productApi';
-import { digits14ToISO, msToISO } from '../utils/datetime';
+import { digits14ToISO, isoToMs, msToISO } from '../utils/datetime';
 // 取数统一走带超时的 fetch：网络半开时不能永久停在“加载中…”
 import { fetchWithTimeout } from '../utils/http';
 
@@ -232,7 +232,8 @@ function putCachedGrid(key: string, grid: RadarGrid): void {
  */
 export async function fetchRadarGrid(
   meta: RadarFileMeta,
-  productId: string
+  productId: string,
+  signal?: AbortSignal
 ): Promise<RadarGrid> {
   const key = cacheKey(meta, productId);
 
@@ -242,7 +243,7 @@ export async function fetchRadarGrid(
   const pending = pendingGrids.get(key);
   if (pending) return pending;
 
-  const task = loadGrid(meta, productId)
+  const task = loadGrid(meta, productId, signal)
     .then((grid) => {
       putCachedGrid(key, grid);
       return grid;
@@ -257,17 +258,37 @@ export async function fetchRadarGrid(
 }
 
 /**
+ * 清空网格缓存（切换布局 / 卸载面板时调用）。
+ *
+ * 缓存是模块级常量，不清理的话：单条 mosaic 约 6.7MB（Float32Array），
+ * 12 条约 80MB；6 屏 + 反复切换时次会持续累积。缓存对象本身没有生命周期，
+ * 只能由调用方在合适的时机显式回收。
+ */
+export function clearGridCache(): void {
+  gridCache.clear();
+}
+
+/** 当前缓存条数（调试/测试用） */
+export function gridCacheSize(): number {
+  return gridCache.size;
+}
+
+/**
  * 真正的下载 + 解析实现（不含缓存）。
  *
  * 流程：fetch 解压后的二进制 → 格式识别 → 分派解析器 → RadarGrid。
  */
-async function loadGrid(meta: RadarFileMeta, productId: string): Promise<RadarGrid> {
+async function loadGrid(
+  meta: RadarFileMeta,
+  productId: string,
+  signal?: AbortSignal
+): Promise<RadarGrid> {
   // 产品元信息：用于合成兜底的峰值/单位标注
   const product = findProduct(productId);
 
   // —— 1) 拉取文件二进制（清单模式为 data/ 下文件名；模板模式为构造出的完整地址） ——
   const url = resolveDataUrl(meta.binFile);
-  const resp = await fetchWithTimeout(url);
+  const resp = await fetchWithTimeout(url, undefined, signal);
   if (resp.status === 404) {
     throw new RadarFileMissingError(url);
   }
@@ -283,9 +304,28 @@ async function loadGrid(meta: RadarFileMeta, productId: string): Promise<RadarGr
     const text = new TextDecoder('utf-8').decode(buf);
     if (!isMicapsM4(text)) throw new Error(meta.binFile + ' 不是合法的 MICAPS diamond 4 文件');
     grid = parseMicapsM4(text, { product, fallbackTime: meta.time });
+    grid.time = meta.time || grid.time;
   } else if (meta.format === 'mosaic' || isRADAMOSAIC(buf)) {
-    // SWAN 雷达三维拼图：取默认高度层的反射率
-    grid = parseRADAMOSAIC(buf, { time: meta.time, product });
+    // SWAN 雷达三维拼图：取默认高度层的反射率。
+    // 先不传 time，让解析器从文件头取时刻，再与清单交叉校验——原实现
+    // 无条件以文件名为准，实测出现过「文件名 2024、文件头 2022」的数据
+    // 被当作当前时次回波展示，属于业务级误导。
+    grid = parseRADAMOSAIC(buf, { product });
+    const headerTime = grid.time || '';
+    const listTime = meta.time || '';
+    if (headerTime && listTime) {
+      const delta = Math.abs(isoToMs(headerTime) - isoToMs(listTime));
+      if (Number.isFinite(delta) && delta > 60_000) {
+        console.warn(
+          `[radarApi] ${meta.binFile} 文件头时间(${headerTime})与清单时间(${listTime})不一致，以文件头为准`
+        );
+      } else {
+        // 差异在 1 分钟内视为同一时次，沿用清单写法（与时间轴、文件名同源）
+        grid.time = listTime;
+      }
+    } else {
+      grid.time = listTime || headerTime;
+    }
   } else {
     // CINRAD 单站 RSTM（含合成兜底，永不抛错）
     grid = parseRSTM(buf, {
@@ -294,9 +334,8 @@ async function loadGrid(meta: RadarFileMeta, productId: string): Promise<RadarGr
       stationId: meta.stationId,
       stationName: meta.stationName
     });
+    grid.time = meta.time || grid.time;
   }
 
-  // —— 3) 以清单时间为准（文件名时间最可靠） ——
-  grid.time = meta.time || grid.time;
   return grid;
 }

@@ -22,7 +22,7 @@ src/api/radarApi.ts             fetchRadarFileList() → manifest.json 文件清
 src/parse/*                     mosaic / rstm / m4 三种格式统一解析为 RadarGrid
         │
         ▼
-src/render/radarRenderer.ts     renderRadar(map, grid, product) → QuickEarth LPixelLayer 色斑图
+src/render/radarRenderer.ts     renderRadar(map, grid, product, smooth, range) → QuickEarth LPixelLayer 色斑图
 ```
 
 - **产品（RadarProduct）** 决定"怎么画"：单位、分级色标。
@@ -115,13 +115,22 @@ QE bitmap 模式会把**低于首个可见阈值的值钳位到第一档颜色**
 
 渲染层的 `firstVisibleThreshold(product)` 取**第一个 alpha>0 档位的 value** 作为显示阈值：
 
-- 渲染前会把低于该阈值的格点就地置为缺测（双保险），这些格点透明不参与点击取值；
+- 渲染时在数据副本上把低于该阈值的格点置为缺测（原始 `grid.data` 保持不变），这些格点透明、不参与点击取值；
 - 修改色标时请保证兜底档 value 远低于业务有效最小值（如反射率用 `-100`）。
 
 ### 生效方式
 
 - 开发模式（`npm run dev`）：保存即热更新。
 - 运行中切换产品（同屏换色标）走 `updateRadarProduct()` 局部刷新，无需重建图层。
+
+### 运行时色标显示范围（每屏独立）
+
+图例上的两个手柄用于选择数值区间 `[min, max)`，范围外的格点渲染为透明、点击取值返回 null：
+
+- 状态：`ScreenState.valueRange`（null=全范围），通过 `setScreenRange(screenId, range)` 修改；
+- 渲染：`renderRadar(..., range)` / `updateRadarRange(...)` 按新范围重建数据副本；
+- 换算：`src/utils/range.ts` 的 `rangeFromStopIndex` / `stopIndexFromRange`（档位索引 ↔ 数值范围）；
+- 上界为开区间：选中 20~50 档对应 `{ min: 20, max: 55 }`（结束档的下一档值）。
 
 ---
 
@@ -141,10 +150,11 @@ const file = files.find((f) => f.time === time);
 const grid = await fetchRadarGrid(file, productId);   // 解析为 RadarGrid
 
 removeRadar(map, oldLayer);                  // 移除旧图层
-const layer = renderRadar(map, grid, product); // ★ 核心：渲染色斑图
+// ★ 核心：渲染色斑图（smooth=是否平滑，range=色标范围，null 表示全范围）
+const layer = renderRadar(map, grid, product, smooth, range);
 
 // ③ 仅切换产品（时间不变）→ 只刷色标，不重建图层
-updateRadarProduct(layer, grid, oldThreshold, newProduct);
+updateRadarProduct(layer, grid, oldThreshold, newProduct, smooth, range, oldRange);
 
 // ④ 销毁（组件卸载/时间切换前）
 removeRadar(map, layer);
@@ -156,30 +166,37 @@ removeRadar(map, layer);
 
 ```ts
 import * as L from 'leaflet';
-import { createRadarMap, addTiandituBase } from './render/mapManager';
+import { createRadarMap, applyBaseMap } from './render/mapManager';
 import {
   renderRadar, removeRadar, sampleGridValue, firstVisibleThreshold
 } from './render/radarRenderer';
 import { fetchRadarFileList, fetchRadarGrid } from './api/radarApi';
 import { getProductById } from './config/products';
 
-// 地图与底图
+// 地图与底图（admin=天地图；border=国界/省界矢量底图）
 const map = createRadarMap(document.getElementById('map')!);
-addTiandituBase(map);
+void applyBaseMap(map, 'admin');
 
 // 取数 + 渲染
 const files = await fetchRadarFileList();
 const product = getProductById('Z')!;                 // 产品决定色标与单位
 const grid = await fetchRadarGrid(files[0], 'Z');     // 网格决定数据
-let layer = renderRadar(map, grid, product);          // ← 渲染就这一句
+// ← 渲染就这一句（smooth=false 格点填色；range=null 全范围）
+let layer = renderRadar(map, grid, product, false, null);
 
 // 时间切换：先移除旧图层再重建
 removeRadar(map, layer);
-layer = renderRadar(map, await fetchRadarGrid(files[1], 'Z'), product);
+layer = renderRadar(map, await fetchRadarGrid(files[1], 'Z'), product, false, null);
 
-// 可选：点击取值（返回 null 表示无数据/低于显示阈值）
+// 可选：点击取值（返回 null 表示无数据 / 低于显示阈值 / 色标范围外）
 map.on('click', (e: L.LeafletMouseEvent) => {
-  const v = sampleGridValue(grid, e.latlng.lat, e.latlng.lng);
+  const v = sampleGridValue(
+    grid,
+    e.latlng.lat,
+    e.latlng.lng,
+    firstVisibleThreshold(product),
+    null
+  );
 });
 ```
 
@@ -187,11 +204,13 @@ map.on('click', (e: L.LeafletMouseEvent) => {
 
 | 方法 | 用途 |
 | --- | --- |
-| `renderRadar(map, grid, product)` | 核心：渲染色斑图，返回 `LPixelLayer`；内部自动过滤弱值 |
-| `updateRadarProduct(layer, grid, oldThreshold, product)` | 同一数据换产品（色标）时局部刷新 |
+| `renderRadar(map, grid, product, smooth?, range?)` | 核心：渲染色斑图，返回 `LPixelLayer`；在副本上过滤弱值与范围外数值 |
+| `updateRadarProduct(layer, grid, oldThreshold, product, smooth?, range?, oldRange?)` | 同一数据换产品（色标/范围）局部刷新；过滤口径变化时重建数据源 |
+| `updateRadarRange(layer, grid, product, smooth, range)` | 仅色标范围变化时局部刷新 |
+| `updateRadarSmooth(layer, product, smooth)` | 仅平滑模式变化时局部刷新 |
 | `removeRadar(map, layer)` | 从地图移除图层 |
-| `sampleGridValue(grid, lat, lon)` | 经纬度 → 最近格点取值，无数据返回 `null` |
+| `sampleGridValue(grid, lat, lon, minVisible?, range?)` | 经纬度 → 最近格点取值；无数据 / 低于阈值 / 范围外返回 `null` |
 | `firstVisibleThreshold(product)` | 取产品首个可见阈值（首个非透明色标档） |
 
-> 注意：`renderRadar` 会**就地修改** `grid.data`（弱值置缺测）。若同一份网格还要用于
-> 其他计算，请先自行深拷贝。
+> 注意：渲染与局部更新都在**数据副本**上过滤，不会修改 `grid.data`；
+> `fetchRadarGrid` 返回的网格可能来自缓存并被多屏共享，调用方必须只读。

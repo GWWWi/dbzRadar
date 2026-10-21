@@ -22,6 +22,12 @@ import {
 /** 要展示的产品代码 + 所属屏 id（范围选择是每屏独立状态） */
 const props = defineProps<{ productId: string; screenId: number }>();
 
+/**
+ * 经纬度查询事件：把解析后的坐标交给所属屏去取值并弹窗。
+ * 取值逻辑（产品、色标范围、阈值）属于 RadarScreen，图例只负责收集输入。
+ */
+const emit = defineEmits<{ query: [lat: number, lon: number] }>();
+
 /** 该产品元信息 */
 const product = computed(() => getProductByIdSafe(props.productId));
 
@@ -146,6 +152,53 @@ function applyRangeIndex(from: number, to: number): void {
 /** 恢复全范围色标 */
 function resetRange(): void {
   setScreenRange(props.screenId, null);
+}
+
+/* ─────────────── 经纬度查询 ─────────────── */
+
+/** 输入框内容："经度, 纬度" */
+const coordInput = ref('');
+
+/** 校验错误提示（空串表示无错误） */
+const coordError = ref('');
+
+/**
+ * 解析输入并提交查询。
+ *
+ * 支持的分隔符：英文/中文逗号、空格（如 `118.83, 33.24`、`118.83 33.24`）。
+ * 顺序固定为「经度在前、纬度在后」（与地图标注一致，避免与常见经纬度写法混淆）。
+ * 校验范围与地图点击取值无关，只拦截明显非法输入。
+ */
+function onQuery(): void {
+  const text = coordInput.value.trim();
+  if (!text) {
+    coordError.value = '请输入「经度, 纬度」';
+    return;
+  }
+
+  const parts = text.split(/[,，\s]+/).filter(Boolean);
+  if (parts.length < 2) {
+    coordError.value = '格式：经度, 纬度';
+    return;
+  }
+
+  const lon = Number(parts[0]);
+  const lat = Number(parts[1]);
+  if (!Number.isFinite(lon) || !Number.isFinite(lat)) {
+    coordError.value = '经纬度必须是数字';
+    return;
+  }
+  if (lon < -180 || lon > 180) {
+    coordError.value = '经度范围 -180 ~ 180';
+    return;
+  }
+  if (lat < -90 || lat > 90) {
+    coordError.value = '纬度范围 -90 ~ 90';
+    return;
+  }
+
+  coordError.value = '';
+  emit('query', lat, lon);
 }
 
 /* ─────────────── 拖拽逻辑 ─────────────── */
@@ -313,5 +366,24 @@ onBeforeUnmount(() => {
         重置
       </button>
     </div>
+
+    <!--
+      经纬度查询：输入「经度, 纬度」→ 在该位置弹窗显示本屏数值。
+      ★ 容器必须 @pointerdown.stop ★ 否则按下输入框会触发浮层拖拽
+        并 setPointerCapture，输入框拿不到焦点（与重置按钮同一坑）。
+    -->
+    <div class="legend-query" @pointerdown.stop>
+      <input
+        v-model="coordInput"
+        class="legend-query-input"
+        type="text"
+        inputmode="decimal"
+        placeholder="经度, 纬度"
+        title="输入「经度, 纬度」，如 118.83, 33.24"
+        @keydown.enter="onQuery"
+      />
+      <button class="legend-query-btn" @click.stop="onQuery">查询</button>
+    </div>
+    <div v-if="coordError" class="legend-query-error">{{ coordError }}</div>
   </div>
 </template>

@@ -18,7 +18,10 @@ export default defineConfig({
   plugins: [vue()],
   server: {
     port: 5179,
-    host: 'localhost',
+    // host: true → 监听 0.0.0.0（含局域网网卡），可经本机 IP 访问；
+    // 启动日志里的 Network 地址即为可用地址（如 http://192.168.1.20:5179/）。
+    // 仅监听 localhost 时，同一局域网的其它设备无法连接。
+    host: true,
     proxy: {
       // 雷达数据服务反向代理：9099 是静态文件服务且未返回 CORS 头，
       // 浏览器直接 fetch 绝对地址会被跨域拦截，这里转发为同源路径。
@@ -29,6 +32,11 @@ export default defineConfig({
         rewrite: (p) => p.replace(/^\/radar-data/, '/data/radarData')
       }
     }
+  },
+  // 预览构建产物时同样允许局域网访问（npm run preview）
+  preview: {
+    port: 4173,
+    host: true
   },
   build: {
     outDir: 'dist',

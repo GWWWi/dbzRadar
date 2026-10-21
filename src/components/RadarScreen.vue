@@ -303,34 +303,55 @@ async function refresh(): Promise<void> {
 }
 
 /**
- * 地图点击取值：把点击经纬度换算为最近格点，弹出该点数值与经纬度（保留三位小数）。
- * 无数据（网格外/缺测/低于显示阈值）时关闭已有弹窗。
+ * 在指定经纬度取本屏数值并弹窗。
+ *
+ * 地图点击与图例的「经纬度查询」共用这一套口径，保证两种入口结果一致：
+ *   - 阈值必须与渲染一致（低于首个可见档的格点在图上透明，取值也应为空）；
+ *   - 色标范围同理（范围外透明 → 取值返回 null）。
+ *
+ * @param lat    纬度
+ * @param lon    经度
+ * @param notify 无数据时是否提示；点击地图静默关闭弹窗，输入查询需要反馈
  */
-function onMapClick(e: L.LeafletMouseEvent): void {
+function showValueAt(lat: number, lon: number, notify = false): void {
   if (!map) return;
-  const product = getProductByIdSafe(screen.value?.productId ?? 'Z');
-  // 取值阈值必须与渲染口径一致：渲染层把低于阈值的格点画成透明，
-  // 若不传阈值，点击无回波区会弹出数值（与图面自相矛盾）。
+
+  const product = getProductByIdSafe(screen.value?.productId ?? 'dBZ');
   const v = layerGrid
     ? sampleGridValue(
         layerGrid,
-        e.latlng.lat,
-        e.latlng.lng,
+        lat,
+        lon,
         firstVisibleThreshold(product),
         screen.value?.valueRange ?? null
       )
     : null;
+
   if (v === null) {
     map.closePopup();
+    if (notify) {
+      ElMessage.warning('该位置无数据（超出数据范围、无回波或已被色标范围裁剪）');
+    }
     return;
   }
+
   L.popup({ closeButton: false, className: 'value-popup' })
-    .setLatLng(e.latlng)
+    .setLatLng([lat, lon])
     .setContent(
       `${v.toFixed(1)} ${product.unit}<br>` +
-      `${e.latlng.lat.toFixed(3)}°N, ${e.latlng.lng.toFixed(3)}°E`
+      `${lat.toFixed(3)}°N, ${lon.toFixed(3)}°E`
     )
     .openOn(map as unknown as L.Map);
+}
+
+/** 地图点击取值（静默：无数据时只关弹窗，不打扰用户） */
+function onMapClick(e: L.LeafletMouseEvent): void {
+  showValueAt(e.latlng.lat, e.latlng.lng);
+}
+
+/** 图例的经纬度查询（无数据时给出提示，避免“点了没反应”） */
+function onQueryCoord(lat: number, lon: number): void {
+  showValueAt(lat, lon, true);
 }
 
 /**
@@ -516,7 +537,12 @@ watch(
     <!-- 地图容器 + 色标浮层（固定在地图右下角，展示本屏产品色标） -->
     <div class="map-area">
       <div :id="mapElId" ref="elRef" class="map"></div>
-      <Legend :screen-id="screenId" :product-id="screen?.productId ?? 'Z'" />
+      <!-- @query：图例输入经纬度后，用本屏的阈值/色标范围取值并弹窗 -->
+      <Legend
+        :screen-id="screenId"
+        :product-id="screen?.productId ?? 'dBZ'"
+        @query="onQueryCoord"
+      />
     </div>
   </div>
 </template>

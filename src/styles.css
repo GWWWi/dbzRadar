@@ -334,6 +334,58 @@ button {
   white-space: nowrap;
 }
 
+/* ───────────── 图例内的经纬度查询 ───────────── */
+/* 图例总宽 220px：输入框 flex 占满，按钮固定宽度 */
+.legend-query {
+  display: flex;
+  gap: 4px;
+  margin-top: 6px;
+}
+
+.legend-query-input {
+  flex: 1;
+  min-width: 0;
+  height: 20px;
+  padding: 0 5px;
+  border: 1px solid #2a3646;
+  border-radius: 3px;
+  background: #0f1520;
+  color: #d8e2ee;
+  font-size: 10px;
+  outline: none;
+}
+
+.legend-query-input::placeholder {
+  color: #5f7288;
+}
+
+.legend-query-input:focus {
+  border-color: #3a7bd5;
+}
+
+.legend-query-btn {
+  height: 20px;
+  padding: 0 8px;
+  border: 1px solid #2a3646;
+  border-radius: 3px;
+  background: #1a2330;
+  color: #7fd0ff;
+  font-size: 10px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.legend-query-btn:hover {
+  border-color: #3a4c66;
+}
+
+.legend-query-error {
+  margin-top: 3px;
+  font-size: 10px;
+  line-height: 1.3;
+  color: #ff7875;
+}
+
 .legend-reset {
   padding: 0;
   border: none;

@@ -18,7 +18,17 @@ export default defineConfig({
   plugins: [vue()],
   server: {
     port: 5179,
-    host: 'localhost'
+    host: 'localhost',
+    proxy: {
+      // 雷达数据服务反向代理：9099 是静态文件服务且未返回 CORS 头，
+      // 浏览器直接 fetch 绝对地址会被跨域拦截，这里转发为同源路径。
+      // 前端取数基地址见 src/config/dataSource.ts（/radar-data/）。
+      '/radar-data': {
+        target: 'http://localhost:9099',
+        changeOrigin: true,
+        rewrite: (p) => p.replace(/^\/radar-data/, '/data/radarData')
+      }
+    }
   },
   build: {
     outDir: 'dist',

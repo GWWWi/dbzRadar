@@ -1,38 +1,34 @@
 /**
  * config/products.ts —— 静态产品目录（“产品列表”接口的数据源）
  *
- * 平台以【雷达反射率（dBZ）】为主要显示产品，因此第一个产品即基本反射率，
- * 也是多屏对比时的默认产品。
+ * 产品与 CINRAD 标准基数据的【矩（Moment）】一一对应，id 即字段名
+ * （见 parse/cinradVolume.ts 的 MOMENT_FIELD）：
+ *   dBZ  滤波后反射率（Reflectivity）             dBZ
+ *   dBT  滤波前反射率（Total Reflectivity）       dBZ
+ *   V    径向速度（Doppler Velocity）             m/s
+ *   W    谱宽（Spectrum Width）                   m/s
+ *   ZDR  差分反射率（Differential Reflectivity）  dB
+ *   CC   协相关系数（Cross Correlation）         0~1
+ *   KDP  差分相移率（Specific Differential Phase）°/km
+ *   SNRH 水平通道信噪比（Horizontal SNR）         dB
+ * ΦDP（差分相移）解析结果里也有，但不作为产品展示（调试用）。
  *
- * 每个产品包含：
- *   - id         ：产品代码
- *   - name       ：中文名（显示在左侧产品列表）
- *   - unit       ：数值单位（显示在图例上）
- *   - colorStops ：色标。渲染层用它构造 QuickEarth 的 fillColor 分级填色规则，
- *                  低于首个阈值或等于缺测值的格点渲染为透明。
+ * 第 0 个产品（dBZ）为默认产品，也是多屏对比的初始产品。
  *
- * 反射率色标采用气象行业通用的“蓝→青→绿→黄→橙→红→紫”分级配色，
- * 阈值间隔 5 dBZ，与主流雷达 PUP 产品一致，便于业务判读。
+ * ★ 每个色标都必须有首档透明兜底档 ★
+ *   QuickEarth 的 bitmap 模式会把低于首个阈值的值钳位到第一档颜色，
+ *   没有低值 alpha=0 的兜底档时，无回波区会被第一档颜色铺满（"蓝色底色"）。
  */
 
 import type { RadarProduct } from '../types';
 
 /**
- * 中央气象台（NMC，nmc.cn）全国雷达拼图【组合反射率】标准色标。
- * 分档：5~70 dBZ，间隔 5，共 14 档。
- * 颜色序列：中蓝→浅青→浅绿→绿→深绿→黄绿→黄→金黄→橙→红→深红→品红→紫→淡紫。
- * 多个反射率类产品（基本反射率 / 组合反射率）共用同一套配色，
- * 保证不同屏之间对比时颜色语义完全一致。
- *
- * ★ 注意首档透明 ★
- * QuickEarth 的 bitmap（格点分级填色）模式会把【低于首个阈值的值钳位到
- * 第一档颜色】，因此必须在最前面加一个 value 很低、alpha=0 的透明档，
- * 让无回波 / 噪声底（< 5 dBZ）区域不着色，否则整幅网格会被第一档
- * 颜色铺满形成"蓝色底色"。（渲染层还会把低于首档的值归入缺测双保险）
+ * 反射率类色标（dBT / dBZ 共用）：气象行业通用“蓝→青→绿→黄→橙→红→紫”，
+ * 5~75 dBZ 间隔 5 dBZ，与主流雷达 PUP 产品一致。
  */
-function reflectivityColorStops() {
+function reflectivityColorStops(): RadarProduct['colorStops'] {
   return [
-    { value: -100, stop: [0, 0, 0, 0] },        // 兜底透明档：< 5 dBZ 全部不着色
+    { value: -100, stop: [0, 0, 0, 0] },        // 兜底透明档：< 5 dBZ 不着色
     { value: 5,   stop: [66, 118, 255, 255] },  //  5：中蓝（弱回波/地物杂波）
     { value: 10,  stop: [100, 217, 255, 255] }, // 10：浅青蓝
     { value: 15,  stop: [94, 227, 154, 255] },  // 15：浅绿
@@ -46,54 +42,170 @@ function reflectivityColorStops() {
     { value: 55,  stop: [187, 27, 75, 255] },   // 55：深红
     { value: 60,  stop: [208, 63, 197, 255] },  // 60：品红
     { value: 65,  stop: [155, 88, 224, 255] },  // 65：紫
-    { value: 70,  stop: [203, 174, 243, 255] }  // 70：淡紫
-  ] as RadarProduct['colorStops'];
+    { value: 70,  stop: [203, 174, 243, 255] }, // 70：淡紫
+    { value: 75,  stop: [230, 200, 250, 255] }  // 75：淡粉（极端回波）
+  ];
+}
+
+/**
+ * 径向速度色标：背离雷达（负）蓝系、朝向雷达（正）红系，0 附近灰白。
+ * 覆盖 ±30 m/s（奈奎斯特速度 8.65 的圈会有折叠，色标按量程着色即可）。
+ */
+function velocityColorStops(): RadarProduct['colorStops'] {
+  return [
+    { value: -1000, stop: [0, 0, 0, 0] },        // 兜底透明档
+    { value: -30,  stop: [0, 0, 200, 255] },     // 强负速度：深蓝
+    { value: -20,  stop: [0, 90, 255, 255] },    // 中负速度：蓝
+    { value: -10,  stop: [80, 200, 255, 255] },  // 弱负速度：浅蓝
+    { value: 0,    stop: [200, 200, 200, 255] }, // 零速度：灰
+    { value: 10,   stop: [255, 200, 80, 255] },  // 弱正速度：浅橙
+    { value: 20,   stop: [255, 110, 0, 255] },   // 中正速度：橙
+    { value: 30,   stop: [220, 0, 0, 255] }      // 强正速度：深红
+  ];
+}
+
+/**
+ * 谱宽色标：0~10 m/s。谱宽反映径向速度离散程度，
+ * 大值通常对应湍流、切变区或数据质量差的区域。
+ */
+function spectrumWidthColorStops(): RadarProduct['colorStops'] {
+  return [
+    { value: -100, stop: [0, 0, 0, 0] },        // 兜底透明档
+    { value: 0,    stop: [240, 250, 240, 255] }, // 0：近白（数据质量好）
+    { value: 2,    stop: [170, 230, 170, 255] }, // 2：浅绿
+    { value: 4,    stop: [110, 200, 110, 255] }, // 4：绿
+    { value: 6,    stop: [250, 220, 90, 255] },  // 6：黄
+    { value: 8,    stop: [240, 130, 40, 255] },  // 8：橙
+    { value: 10,   stop: [200, 40, 40, 255] }    // 10：红（湍流/质量差）
+  ];
+}
+
+/**
+ * 差分反射率（ZDR）色标：-2 ~ 8 dB。
+ * 大值（>3 dB）对应大水滴（强降水），接近 0 对应小冰雹/雪花。
+ */
+function zdrColorStops(): RadarProduct['colorStops'] {
+  return [
+    { value: -100, stop: [0, 0, 0, 0] },        // 兜底透明档
+    { value: -2,   stop: [40, 60, 140, 255] },  // 极低：深蓝
+    { value: 0,    stop: [70, 150, 220, 255] }, // 低：蓝
+    { value: 1,    stop: [140, 210, 180, 255] },// 中：青绿
+    { value: 2,    stop: [250, 230, 120, 255] },// 中高：黄
+    { value: 4,    stop: [240, 140, 50, 255] }, // 高：橙
+    { value: 6,    stop: [220, 50, 50, 255] },  // 很高：红
+    { value: 8,    stop: [150, 20, 120, 255] }  // 极高：紫红
+  ];
+}
+
+/**
+ * 相关系数（CC）色标：0.85 ~ 1.05。
+ * CC 低（<0.9）表示水平/垂直通道相干性差，常见于非气象回波、
+ * 衰减严重区或数据质量差的区域，是偏振数据质量的关键判据。
+ */
+function ccColorStops(): RadarProduct['colorStops'] {
+  return [
+    { value: -100, stop: [0, 0, 0, 0] },         // 兜底透明档
+    { value: 0.85, stop: [150, 30, 30, 255] },   // 低：暗红（质量差）
+    { value: 0.9,  stop: [230, 90, 40, 255] },   // 偏低：橙红
+    { value: 0.93, stop: [250, 180, 60, 255] },  // 中：黄
+    { value: 0.96, stop: [160, 230, 120, 255] }, // 良：浅绿
+    { value: 0.99, stop: [60, 190, 160, 255] },  // 优：青
+    { value: 1.05, stop: [20, 120, 200, 255] }   // 极优：蓝
+  ];
+}
+
+/**
+ * 差分相移率（KDP）色标：-1 ~ 6 °/km。
+ * KDP 是大雨判别的核心量：>1 °/km 通常对应强降雨带，
+ * 且对冰雹不敏感（弥补反射率的不足）。
+ */
+function kdpColorStops(): RadarProduct['colorStops'] {
+  return [
+    { value: -100, stop: [0, 0, 0, 0] },        // 兜底透明档
+    { value: -1,   stop: [90, 90, 160, 255] },  // 负值：暗蓝紫
+    { value: 0,    stop: [200, 210, 230, 255] },// 0 附近：灰白
+    { value: 0.3,  stop: [120, 220, 160, 255] },// 弱：浅绿
+    { value: 1,    stop: [60, 200, 90, 255] },  // 中：绿
+    { value: 2,    stop: [250, 220, 80, 255] }, // 较强：黄
+    { value: 3.5,  stop: [240, 140, 40, 255] }, // 强：橙
+    { value: 6,    stop: [210, 40, 40, 255] }   // 极强：红
+  ];
+}
+
+/**
+ * 水平通道信噪比（SNRH）色标：0 ~ 60 dB。
+ * SNRH 低说明该距离库的水平通道信号接近底噪，偏振量（ZDR/KDP/CC）
+ * 在该处不可信，通常作为偏振产品质量控制的第一道门限。
+ */
+function snrhColorStops(): RadarProduct['colorStops'] {
+  return [
+    { value: -100, stop: [0, 0, 0, 0] },         // 兜底透明档
+    { value: 0,    stop: [120, 40, 40, 255] },   // 极低：暗红
+    { value: 10,   stop: [220, 100, 40, 255] },  // 低：橙
+    { value: 20,   stop: [250, 200, 80, 255] },  // 中低：黄
+    { value: 30,   stop: [170, 230, 120, 255] }, // 中：浅绿
+    { value: 45,   stop: [80, 200, 160, 255] },  // 良：青
+    { value: 60,   stop: [30, 120, 200, 255] }   // 优：蓝
+  ];
 }
 
 /** 静态产品目录数组（顺序即产品列表展示顺序，第 0 个为默认产品） */
 export const PRODUCTS: RadarProduct[] = [
   {
-    id: 'Z',
-    name: '基本反射率',
+    id: 'dBZ',
+    name: '反射率（dBZ）',
     unit: 'dBZ',
     type: 'obs',
     colorStops: reflectivityColorStops()
   },
   {
-    id: 'CR',
-    name: '组合反射率',
+    id: 'dBT',
+    name: '原始反射率（dBT）',
     unit: 'dBZ',
     type: 'obs',
     colorStops: reflectivityColorStops()
-  },
-  {
-    id: 'ETV',
-    name: '回波顶高',
-    unit: 'km',
-    type: 'obs',
-    colorStops: [
-      { value: -100, stop: [0, 0, 0, 0] },   // 兜底透明档（同反射率说明）
-      { value: 3,  stop: [166, 242, 143, 255] },
-      { value: 6,  stop: [61, 186, 61, 255] },
-      { value: 9,  stop: [253, 221, 92, 255] },
-      { value: 12, stop: [240, 140, 40, 255] },
-      { value: 15, stop: [240, 80, 80, 255] },
-      { value: 18, stop: [190, 0, 120, 255] }
-    ]
   },
   {
     id: 'V',
-    name: '径向速度',
+    name: '径向速度（V）',
     unit: 'm/s',
     type: 'obs',
-    colorStops: [
-      { value: -1000, stop: [0, 0, 0, 0] },       // 兜底透明档：< -30 m/s 不着色
-      { value: -30, stop: [0, 0, 255, 255] },     // 负速度（远离雷达，蓝系）
-      { value: -15, stop: [0, 200, 255, 255] },
-      { value: 0,   stop: [210, 210, 210, 255] }, // 0 附近：灰
-      { value: 15,  stop: [255, 180, 0, 255] },
-      { value: 30,  stop: [255, 0, 0, 255] }      // 正速度（朝向雷达，红系）
-    ]
+    colorStops: velocityColorStops()
+  },
+  {
+    id: 'W',
+    name: '谱宽（W）',
+    unit: 'm/s',
+    type: 'obs',
+    colorStops: spectrumWidthColorStops()
+  },
+  {
+    id: 'ZDR',
+    name: '差分反射率（ZDR）',
+    unit: 'dB',
+    type: 'obs',
+    colorStops: zdrColorStops()
+  },
+  {
+    id: 'CC',
+    name: '相关系数（CC）',
+    unit: '',
+    type: 'obs',
+    colorStops: ccColorStops()
+  },
+  {
+    id: 'KDP',
+    name: '差分相移率（KDP）',
+    unit: '°/km',
+    type: 'obs',
+    colorStops: kdpColorStops()
+  },
+  {
+    id: 'SNRH',
+    name: '信噪比（SNRH）',
+    unit: 'dB',
+    type: 'obs',
+    colorStops: snrhColorStops()
   }
 ];
 

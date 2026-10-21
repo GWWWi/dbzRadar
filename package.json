@@ -16,9 +16,11 @@
   "dependencies": {
     "@quickearth/core": "3.2.2",
     "@quickearth/leaflet": "3.2.2",
+    "buffer": "^6.0.3",
     "compressjs": "1.0.3",
     "element-plus": "^2.14.5",
     "leaflet": "1.9.4",
+    "seek-bzip": "^2.0.0",
     "vue": "3.4.21"
   },
   "devDependencies": {

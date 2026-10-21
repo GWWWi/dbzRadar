@@ -48,8 +48,8 @@ export interface RadarProduct {
 
 /**
  * 地图底图模式（全局，所有屏共用）：
+ *   - border：国界/省界矢量底图（**默认**；陆地/海洋填色 + 国界、省界线）
  *   - admin ：天地图行政底图（矢量底图 + 中文注记瓦片）
- *   - border：国界/省界矢量底图（陆地/海洋填色 + 国界、省界线）
  */
 export type BaseMapMode = 'admin' | 'border';
 
@@ -114,7 +114,10 @@ export interface AppConfig {
 export interface RadarFileMeta {
   /** 原始文件名（.bz2 或 .bin 或 .m4） */
   file: string;
-  /** 实际 fetch 的文件名（解压后的 .bin，或原始 .bin/.m4） */
+  /**
+   * 实际 fetch 的文件路径：纯文件名（拼接数据服务基地址）、相对路径或绝对 URL。
+   * .bz2 压缩文件照常填原名，取数阶段会在浏览器端解压。
+   */
   binFile: string;
   /** 观测时刻（ISO 字符串，如 '2022-06-19T00:00:43'），时间轴据此排列 */
   time: string;
@@ -124,8 +127,110 @@ export interface RadarFileMeta {
   stationName: string;
   /** 是否包含真实数据体（false 时解析器会用合成网格兜底） */
   hasData: boolean;
-  /** 数据格式（见 RadarFileFormat） */
+  /** 数据格式（见 RadarFileFormat）；.bz2 文件填解压后的预期格式 */
   format: RadarFileFormat;
+  /**
+   * 是否为 bzip2 压缩文件（如 `*.bin.bz2`）。
+   * true 时取数阶段先解压，再按二进制魔数识别真实格式；
+   * 缺省/undefined 视为未压缩。
+   */
+  compressed?: boolean;
+}
+
+/**
+ * RSTM 标准格式基数据中的一个径向（某仰角层的某一方位）。
+ *
+ * 极坐标组织：以雷达站为原点，按“方位角 + 距离库”寻址。
+ * 字段为 Float32Array（缺测 = UNDEF 哨兵）：9 层 × 约 360 方位 × 9 字段 × 1840 库
+ * 约 5400 万个数值，必须用类型化数组（对象数组会有上百 MB 开销）。
+ * 不同字段的库数可能不同（V/W 在部分仰角/距离不采集），读取时按各自长度。
+ */
+export interface RstmRadial {
+  /** 方位角（度）：正北为 0，顺时针递增 */
+  azimuth: number;
+  /** 该径向实际仰角（度，来自径向头） */
+  elevation: number;
+  /**
+   * 该径向所属 cut 的奈奎斯特速度（m/s）。
+   * 注意：同一仰角的长圈（460km，8.65）与短圈（230km，27.23）不同，
+   * 合并后以“V/W 实际来源的那一圈”为准（逐字段合并时会同步更新）。
+   */
+  nyquist: number;
+  /** 观测时间（Unix 秒） */
+  seconds: number;
+  /** 观测时间微秒部分 */
+  microseconds: number;
+  /** 各字段的距离库数组（缺测 = UNDEF） */
+  fields: Record<RstmFieldName, Float32Array>;
+}
+
+/**
+ * RSTM 标准格式基数据体（CINRAD V2 / VCP21D）：9 个唯一仰角层。
+ * 由 cinradVolume.parseRstmVolume() 解析得到。
+ */
+export interface RstmVolume {
+  stationId: string;
+  stationName: string;
+  /** 雷达站纬度 */
+  lat: number;
+  /** 雷达站经度 */
+  lon: number;
+  /** 观测时刻（ISO，由首个径向时间换算） */
+  time: string;
+  /** 距离库长（米，各层一致时取首层；分层值见 gateSizes） */
+  gateSize: number;
+  /** 每层距离库数（该层 dBZ 数组长度） */
+  gateCounts: number[];
+  /** 每层距离库长（米） */
+  gateSizes: number[];
+  /** 每层起始距离（米，库位置 = startRange + gateSize×(i+0.5)） */
+  startRanges: number[];
+  /**
+   * 每层最大探测距离（米，来自 cut 配置）。
+   * 超过该距离的距离库是无效残留数据，栅格化与取样都必须忽略。
+   */
+  maxRanges: number[];
+  /** 每层奈奎斯特速度（m/s）：0.5°/1.5° 长圈 8.65、短圈 27.23、高仰角 31.72 */
+  nyquists: number[];
+  /** 唯一仰角（度）升序，与 layers 一一对应（VCP21D 为 9 个） */
+  elevations: number[];
+  /** layers[i] = 第 i 个仰角层的全部径向（按方位角升序） */
+  layers: RstmRadial[][];
+}
+
+/** RSTM 字段名（与产品代码一致） */
+export type RstmFieldName =
+  | 'dBT'
+  | 'dBZ'
+  | 'V'
+  | 'W'
+  | 'ZDR'
+  | 'CC'
+  | 'KDP'
+  | 'SNRH'
+  | 'PHIDP';
+
+/** RSTM 取样结果：给定经纬度处各字段的数值 */
+export interface RstmSample {
+  /** 相对雷达站的方位角（度） */
+  azimuth: number;
+  /** 相对雷达站的斜距（米） */
+  range: number;
+  /** 所在仰角层的标称仰角（度） */
+  elevation: number;
+  /** 该层奈奎斯特速度（m/s） */
+  nyquist: number;
+  /** 对应的距离库序号 */
+  gate: number;
+  dBT: number | null;
+  dBZ: number | null;
+  V: number | null;
+  W: number | null;
+  ZDR: number | null;
+  CC: number | null;
+  KDP: number | null;
+  SNRH: number | null;
+  PHIDP: number | null;
 }
 
 /**

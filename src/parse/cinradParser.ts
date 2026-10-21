@@ -86,10 +86,10 @@ function isAllZero(buf: Uint8Array): boolean {
 
 /**
  * 尝试解析 RSTM 头部；魔数不符 / 长度不足 / 经纬度明显非法时返回 null。
- * 只提取站点标识与定位信息：体数据不可解码，缺测值字段也不参与平台约定
- * （平台缺测哨兵固定为 UNDEF）。
+ * 只提取站点标识与定位信息：体数据由 cinradVolume.ts 解析，
+ * 因此这里导出供其复用，避免文件头偏移常量写两份。
  */
-function tryParseHeader(buf: Uint8Array): {
+export function tryParseHeader(buf: Uint8Array): {
   stationId: string;
   stationName: string;
   lat: number;

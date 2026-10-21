@@ -47,6 +47,13 @@ export interface ScreenState {
    * 范围外的格点在渲染时置为缺测（不显示颜色），见 utils/range.ts。
    */
   valueRange: ValueRange | null;
+  /**
+   * 本屏可用仰角列表（度）：仅当当前数据是 RSTM 基数据体（9 仰角层）时非空。
+   * 空数组 = 当前数据没有仰角维度（拼图 / m4 / 合成 RSTM），UI 隐藏仰角选择器。
+   */
+  elevations: number[];
+  /** 本屏当前仰角索引（elevations 的下标）；非 RSTM 数据时固定为 0 */
+  elevationIndex: number;
 }
 
 /** 全局应用状态形状 */
@@ -66,7 +73,11 @@ export interface AppState {
   syncPlay: boolean;
   /** 多屏地图联动开关：true=任一屏缩放/移动地图时，其余屏同步相同视野 */
   syncMap: boolean;
-  /** 地图底图模式（全局）：admin=天地图行政底图；border=国界/省界矢量底图 */
+  /**
+   * 地图底图模式（全局）：
+   *   - border：国界/省界矢量底图（默认，启动即为国界）
+   *   - admin ：天地图行政底图
+   */
   baseMap: BaseMapMode;
 }
 
@@ -78,7 +89,9 @@ function createScreens(n: number): ScreenState[] {
     time: '',
     status: '',
     smooth: false,
-    valueRange: null // 默认全范围（不裁剪色标）
+    valueRange: null, // 默认全范围（不裁剪色标）
+    elevations: [], // 非 RSTM 基数据体时为空（UI 隐藏仰角选择器）
+    elevationIndex: 0
   }));
 }
 
@@ -95,7 +108,8 @@ export const appState = reactive<AppState>({
   playing: false,
   syncPlay: true,
   syncMap: true,
-  baseMap: 'admin'
+  // 默认国界底图：不依赖天地图 key，弱网/离线也能看出地理轮廓
+  baseMap: 'border'
 });
 
 /* ─────────────────────────── mutations ─────────────────────────── */
@@ -125,7 +139,9 @@ export function setLayout(layout: LayoutType): void {
       time: '',
       status: '',
       smooth: false,
-      valueRange: null
+      valueRange: null,
+      elevations: [],
+      elevationIndex: 0
     };
     // 新屏 id 取“当前最大 id + 1”：id 只要求唯一，不要求等于数组下标
     let nextId = cur.reduce((max, s) => Math.max(max, s.id), -1) + 1;
@@ -138,7 +154,9 @@ export function setLayout(layout: LayoutType): void {
         time: base.time,
         status: '',
         smooth: base.smooth,
-        valueRange: base.valueRange ? { ...base.valueRange } : null
+        valueRange: base.valueRange ? { ...base.valueRange } : null,
+        elevations: [],
+        elevationIndex: 0
       });
     }
   } else if (cur.length > layout) {
@@ -197,6 +215,32 @@ export function setScreenSmooth(id: number, smooth: boolean): void {
 export function setScreenRange(id: number, range: ValueRange | null): void {
   const s = findScreen(id);
   if (s) s.valueRange = range;
+}
+
+/**
+ * 记录本屏当前数据的可用仰角列表（RSTM 基数据体的 9 个仰角）。
+ *
+ * 空数组表示当前数据没有仰角维度（拼图 / m4 / 合成 RSTM），
+ * 此时仰角选择器隐藏、elevationIndex 重置为 0。
+ * 非空时把 elevationIndex 钳制到合法范围（保留用户上一次的选择）。
+ */
+export function setScreenElevations(id: number, elevations: number[]): void {
+  const s = findScreen(id);
+  if (!s) return;
+  s.elevations = elevations;
+  s.elevationIndex = elevations.length
+    ? Math.min(Math.max(s.elevationIndex, 0), elevations.length - 1)
+    : 0;
+}
+
+/**
+ * 切换本屏仰角层（RSTM 基数据体有效；其它数据类型调用无效果）。
+ * @param index elevations 数组的下标
+ */
+export function setScreenElevation(id: number, index: number): void {
+  const s = findScreen(id);
+  if (!s || s.elevations.length === 0) return;
+  s.elevationIndex = Math.min(Math.max(index, 0), s.elevations.length - 1);
 }
 
 /**
@@ -326,7 +370,9 @@ const EMPTY_SCREEN: ScreenState = {
   time: '',
   status: '',
   smooth: false,
-  valueRange: null
+  valueRange: null,
+  elevations: [],
+  elevationIndex: 0
 };
 
 /** 当前激活屏的 ScreenState（按 id 查找，不依赖数组下标） */

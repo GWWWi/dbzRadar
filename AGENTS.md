@@ -17,7 +17,7 @@
 | 地图 | QuickEarth 3.2.2（`@quickearth/core` + `@quickearth/leaflet`）+ Leaflet 1.9.4 |
 | QE 地图类 | `LMap extends Leaflet L.Map`——Leaflet 的 on/popup/layer API 全部可用 |
 | QE 初始化 | `src/main.ts`：先设 `consts.wasmPath='/libs/wasm'`、`workerPath='/libs/workers'`，再 `qeInit(undefined, true)` 免费二维模式 |
-| dev | `npm run dev`（scripts/dev.cjs，端口 5179，strictPort） |
+| dev | `npm run dev`（scripts/dev.cjs，端口 5179，strictPort）；`/radar-data` 代理到 `http://localhost:9099/data/radarData` |
 | build | `npm run build`（scripts/build.cjs） |
 | 类型检查 | `npx vue-tsc --noEmit -p tsconfig.json`（★ 无测试框架，这就是唯一自动验证手段） |
 
@@ -42,23 +42,26 @@ src/
   utils/datetime.ts            ★ 时间格式转换唯一实现：msToISO/msToText/isoToMs/isoToCompact/compact12ToISO/digits14ToISO
   utils/http.ts                ★ fetchWithTimeout（默认 10s）+ FetchTimeoutError：所有网络请求统一走这里
   utils/range.ts               ★ 色标范围：isValueInRange/isValueVisible/valueRangeKey/rangeFromStopIndex/stopIndexFromRange（渲染、取值、图例共用同一口径）
+  utils/bzip2.ts               ★ bzip2 解压（seek-bzip + buffer polyfill）：.bz2 雷达基数据在浏览器端解压
   types/index.ts               ★ 数据契约（唯一类型源）：ColorStop/RadarProduct/RadarProductType/RadarFileMeta/RadarGrid/AppConfig/TimelineConfig
-  config/products.ts           内置产品静态目录 PRODUCTS（服务器产品目录的回退）+ 色标函数 reflectivityColorStops()
+  config/products.ts           内置产品静态目录 PRODUCTS（服务器产品目录的回退）+ 8 个产品的专用色标函数；产品 id 与 RSTM 字段名一致（dBZ/dBT/V/W/ZDR/CC/KDP/SNRH）
+  config/dataSource.ts         ★ 雷达数据基地址 DATA_BASE_URL（默认 /radar-data/，由 Vite 代理到 9099）
   api/productApi.ts            fetchProductList()（服务器 products.json → 失败回退静态）/findProduct(id)/setProductUrl(url)
   api/configApi.ts             fetchAppConfig()（config.json，缺失回退清单模式）/setConfigUrl(url)/buildTimelineTimes(cfg, anchorMs?) 时间轴生成
-  api/radarApi.ts              fetchRadarFileList(url?)/buildFileMetaFromTemplate(template,time)/parseUploadedFile(file,productId) 上传文件格式识别/RadarFileMissingError(404)/fetchRadarGrid(meta, productId) 分派解析器（LRU 缓存 12 条 + 在途请求合并，返回共享 grid 对象，只读）
+  api/radarApi.ts              fetchRadarFileList(url?)（配置 → 远程 manifest → 目录扫描 → 本地回退）/buildFileMetaFromTemplate(template,time)/parseUploadedFile(file,productId)/RadarFileMissingError(404)/fetchRadarGrid(meta, productId) 解压 .bz2 + 按魔数分派解析器（LRU 12 条 + 在途合并）/fetchRstmVolume(meta) RSTM 基数据体取数（LRU 3 条约 54MB + 在途合并；非体数据格式返回 null → 调用方回退合成网格）
   parse/mosaicParser.ts        SWAN 拼图 "diamond" 头：isRADAMOSAIC()/parseRADAMOSAIC()
-  parse/cinradParser.ts        CINRAD 单站 RSTM："RSTM" 魔数：parseRSTM()（体数据不可解码，恒为合成团块；isSynthetic 恒 true，头部只提供站点定位）
+  parse/cinradParser.ts        CINRAD 单站 RSTM："RSTM" 魔数：parseRSTM()（体数据不可解码，恒为合成团块；isSynthetic 恒 true，头部只提供站点定位）；导出 tryParseHeader 供 cinradVolume 复用
+  parse/cinradVolume.ts        ★ RSTM 标准格式（CINRAD V2）解析：parseRstmVolume（11 cut → 9 仰角 × 360 方位 × 9 矩 dBT/dBZ/V/W/ZDR/CC/ΦDP/KDP/SNRH）/sampleRstmValue/latLonToPolar/volumeToGrid
   parse/micapsM4Parser.ts      MICAPS 第4类文本：isMicapsM4()/parseMicapsM4()
   render/mapManager.ts         createRadarMap(el)/applyBaseMap(map,mode)/applyBaseMapToAll(mode)（admin=天地图 vec_w+cva_w；border=国界矢量：陆地 #efefdb、海洋 #97b6e1、界线 #606266，世界/中国 1px、省界 0.8px，按需加载 mapBorder 三份 GeoJSON）/setMapLink/registerMapLink/unregisterMapLink（多屏联动，move 经 rAF 合并）
   render/radarRenderer.ts      ★ 核心：renderRadar(smooth,range)/updateRadarProduct/updateRadarSmooth/updateRadarRange/removeRadar/sampleGridValue/firstVisibleThreshold
-  store/appStore.ts            Vue reactive 单例全局状态 + mutations（setLayout/setScreenProduct/setScreenSmooth/setScreenRange/setScreenTime/setFiles/setProducts/setPlaying/setSyncPlay/setSyncMap/setActiveScreen/setScreenStatus/setTimeline(times,template)/setTimelineConfig/getProductByIdSafe）+ 状态 timeline/fileUrlTemplate/timelineConfig + computed（activeScreen/timelineTimes：优先配置生成，回退 files 推导）；ScreenState.smooth / valueRange 均为每屏独立
+  store/appStore.ts            Vue reactive 单例全局状态 + mutations（setLayout/setScreenProduct/setScreenSmooth/setScreenRange/setScreenElevations/setScreenElevation/setScreenTime/setFiles/setProducts/setPlaying/setSyncPlay/setSyncMap/setBaseMap/setActiveScreen/setScreenStatus/setTimeline(times,template)/setTimelineConfig/getProductByIdSafe）+ 状态 timeline/fileUrlTemplate/timelineConfig + computed（activeScreen/timelineTimes：优先配置生成，回退 files 推导）；ScreenState.smooth / valueRange / elevations+elevationIndex 均为每屏独立
   components/
     Toolbar.vue                布局切换(1/2/4/6屏)/同步开关/地图联动开关/播放按钮
     ProductList.vue            左侧产品列表（作用于激活屏）
     TimeAxis.vue               Canvas 刻度轴（样式参考 timeline-canvas）：拖拽左右任意平移（不触发取数），松手后吸附最近时次并 emit('change') 加载对应文件；点击跳转/滚轮缩放；顶条绿色刻度=有文件时次；受控组件；重绘经 rAF 合并，marks 升序二分只画可见区间
     Timeline.vue               底部时间轴（syncPlay 时广播全部屏；TimeAxis 刻度轴 + 上一/下一时次；Element Plus 控件：el-date-picker 选锚点（配置模式，预报起报/实况结束，改选重生成时间轴）+ el-date-picker 跳转时次（显示 YYYY-MM-DD HH:mm，值 YYYYMMDDHHmm，吸附最近可用时次））
-    RadarScreen.vue            ★ 单屏容器：建图/watch 取数渲染/点击取值 popup/无文件提示“该时次无数据”/屏头平滑开关（每屏独立）/屏头上传按钮（每屏独立，格式识别后本屏渲染）/卸载销毁
+    RadarScreen.vue            ★ 单屏容器：建图/watch 取数渲染/点击取值 popup/无文件提示“该时次无数据”/屏头仰角选择（仅 RSTM 基数据体 9 层显示）/屏头平滑开关（每屏独立）/屏头上传按钮（每屏独立，格式识别后本屏渲染）/卸载销毁
     Legend.vue                 右下角色标浮层（可拖拽；每屏独立的色标范围：自绘双圆点手柄叠加在色标条上，只显示所选区间颜色，范围外透明）
 ```
 
@@ -146,10 +149,17 @@ renderRadar **不修改 grid.data**：渲染数据源内部使用“按当前阈
     （`updateRadarProduct` / `updateRadarRange` / `updateRadarSmooth`）末尾都要 `forceRedraw(layer)`
     （内部调 QE 公开 API `reinit()`）。否则表现为“数据已变、画面要等缩放/拖动地图才刷新”。
     新建图层的 `renderRadar` 不需要调用（`addLayer` 会触发绘制）。
-17. **底图双模式**：`admin`=天地图瓦片；`border`=矢量（容器背景海洋色 + 世界/中国陆地填充 + 省界线）。
+17. **底图双模式**：`border`=矢量（**默认**；容器背景海洋色 + 世界/中国陆地填充 + 省界线）；`admin`=天地图瓦片。
     矢量底图必须放在 `qe-base-border` pane（zIndex 190），否则会盖住雷达色斑图。
     边界数据用 `?url` 按需加载（约 4MB），**禁止改成静态 import** 打进主包；
     每张地图的切换有独立 token，异步加载回来时若已切走/卸载必须丢弃结果。
+18. **雷达数据源**：默认基地址 `/radar-data/`（`src/config/dataSource.ts`），由 Vite 代理到
+    `http://localhost:9099/data/radarData/`（该静态服务未返回 CORS 头，前端不能直接 fetch 绝对地址）。
+    清单获取顺序：配置地址 → 数据服务 `manifest.json` → 目录索引扫描 → 本地 `data/manifest.json`；
+    目录扫描纳入 `.m4` / `.bin` / `.bin.bz2`：`.bz2` 由 `utils/bzip2.ts`（seek-bzip + Buffer polyfill）
+    在浏览器端解压，解压后按二进制魔数（RSTM / SWAN / diamond 4）识别格式，不依赖文件名。
+    compressjs 仅 Node 可用（浏览器触发 amdefine 报错），前端解压禁止使用它。
+    生产部署需在 nginx 配置同样的 `/radar-data/` 反向代理。
 
 ## 7. 分层规则与编码规范
 

@@ -421,6 +421,24 @@ button {
   cursor: pointer;
 }
 
+/* 屏头仰角层选择（RSTM 基数据体 9 层；非基数据体时元素不渲染） */
+.screen-elev {
+  margin-left: 6px;
+  height: 20px;
+  padding: 0 4px;
+  border: 1px solid #2a3646;
+  border-radius: 3px;
+  background: #1a2330;
+  color: #d8e2ee;
+  font-size: 11px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.screen-elev:hover {
+  border-color: #3a4c66;
+}
+
 /* 屏头上传按钮（每屏独立）：复用 .btn 基础样式 */
 .screen-upload {
   margin-left: 6px;

@@ -9,6 +9,7 @@
   - `src/mapBorder/`：国界底图 GeoJSON（worldGJ 179 国 / chinaGJ 全国 / chinaSJ 42 省，合计约 4MB，`?url` 按需加载）
   - `src/utils/`：datetime（时间）、http（超时 fetch）、range（色标范围换算）
   - `src/store/appStore.ts`：Vue reactive 单例全局状态（多屏 / 产品 / 时间 / 播放）
+  - `src/config/products.ts`：内置产品目录（8 个产品：dBZ/dBT/V/W/ZDR/CC/KDP/SNRH，id 即 RSTM 字段名，各配专用色标）
   - `src/components/`：Toolbar / ProductList / Timeline / RadarScreen（单屏容器）/ Legend
   - `src/utils/datetime.ts`：时间格式转换唯一实现（ISO / 紧凑串 / 显示文本）
   - `src/utils/http.ts`：带超时的 fetch 封装（所有网络请求统一入口）
@@ -18,6 +19,167 @@
 - 数据契约：`src/types/index.ts` 中 RadarGrid —— x 经度/y 纬度，data 行优先一维数组，yDelta<0 表示第 0 行在最北；undef 为缺测哨兵值
 
 # 迭代变更日志（按时间倒序）
+
+【2026-10-21 本轮改动（默认底图改为国界）】
+
+1. 修改文件：`src/store/appStore.ts`、`src/types/index.ts`
+
+2. 修改目的：启动即为「国界」矢量底图（原默认是天地图「行政」）。
+
+3. 关键规则沉淀：
+   - `appStore.baseMap` 默认值 `'admin'` → **`'border'`**；`RadarScreen` 挂载时读该值，新屏/布局扩展自动跟随
+   - 工具栏按钮高亮直接绑定 `appState.baseMap`，无需额外改动
+   - 副作用：首屏会加载约 4MB 边界 GeoJSON（worldGJ/chinaGJ/chinaSJ），加载期间先显示海洋色（`#97b6e1`），随后陆地与界线出现；数据加载完会缓存 Promise，切屏不重复加载
+   - 好处：不依赖天地图 key，弱网/离线也能看出地理轮廓
+
+【2026-10-21 本轮改动（方案 A：保留精确方位，不再量化到 1°）】
+
+1. 修改文件：`src/parse/cinradVolume.ts`、`src/types/index.ts`（nyquist 字段）、`CLAUDE.md`
+
+2. 修改目的：减小 JS 解析与服务端 m4 的重采样差异（用户选择方案 A）。
+
+3. 关键规则沉淀：
+   - 解析不再按 1° 量化合并：长短圈全部径向保留（0.5° 层 **730 条**），只按 `azimuth.toFixed(3)` 去重
+   - 新增 `findNearestRadialIndex(layer, azimuth, field)`：二分定位方位夹缝 + 向两侧各 8 条找“该字段有数据且方位差最小”的径向 —— 长圈（460km，无 V/W）与短圈（230km，有 V/W）必须按字段分别找
+   - `sampleRstmValue` 逐字段独立找径向（dBZ 作“有无回波”的判定基准）；`volumeToGrid` 用 index 版以便邻域回找
+   - 实测收益（同时次 03:17:55 vs m4）：150km+ 平均差 **3.97 → 2.04** m/s，60-100km 2.03 → 1.91，100-150km 1.20 → 1.06；“仅 m4 有值” 80 → **30** 点；方位步长 0.98° → **0.49°**（长/短圈交错）
+   - 性能：栅格化 V 51ms / dBZ 93ms（24 万点），未变慢
+   - **0-30km 仍有 5.12 m/s 差异**：V 只有短圈 363 条（0.99°），方位分辨率无法再提升；且 m4 由服务端网格化（算法未知，疑似做过平滑/面积平均），近距离速度梯度极大（30km 处 0.5° 只跨 0.26km）。想进一步接近只能做邻域平均（会磨平小尺度细节），需用户确认
+
+【2026-10-21 本轮改动（V 差异归因 + 层 Nyquist 修正）】
+
+1. 修改文件：`src/parse/cinradVolume.ts`、`src/types/index.ts`、`CLAUDE.md`
+
+2. 修改目的：用户问“JS 解码与 Python/m4 结果为什么有差别”。经四类归因分析给出结论，并修正一个实际问题（层 Nyquist 记成了长圈的 8.65）。
+
+3. 差异归因（同时次 03:17:55，逐格点实测）：
+   - **主因是重采样口径，不是解码**：差异 >5 m/s 的点中 **93.6%** 在我们 ±3 格邻域内能找到与 m4 相差 <1.5 的值 → 同一物理点被采到相邻格
+   - 距离分段：0-30km 平均差 4.74（差>5 占 33.6%）、30-60km 3.83、60-100km 2.03、100-150km 1.20、150+ 3.97 —— 越近越大，因为 1° 方位在 30km 处只跨 0.5km，而径向是 250m，速度梯度大
+   - 网格原点不同：我们 xStart=116.456 / yStart=34.919，m4 是 116.35 / 35.31（错开约 10 格）
+   - 方位量化：原始每圈 363~368 条（0.98°/0.99°），我们量化到 1°（360 桶）并合并长短圈
+   - 邻域回找：我们有效点 23.9% vs m4 16.4%，“仅我们有值” 2208 点，“仅 m4 有值” 80 点（0.96%）
+   - 速度折叠 vs 二维解缠：|v| > Nyquist-0.5 的点仅 **0.05%**，影响面很小，不是主因
+   - 缺测判定（code≤4）、解码公式 `(code-Offset)/Scale` 完全一致
+   - ★ 对比 m4 必须用同时次（m4 03:17:55 ↔ bz2 `Z_RADR_I_Z9517_20261018031755_...`）
+   - **修正**：`RstmRadial` 增加 `nyquist` 字段；逐字段合并 V/W 时同步切换 Nyquist；层 `nyquists` 取“V/W 实际来源圈”的值（0.5°/1.5° 由 8.65 → **27.23**）
+
+【2026-10-21 本轮改动（V 按奈奎斯特速度折叠，与 m4 产品对齐）】
+
+1. 修改文件：`src/parse/cinradVolume.ts`、`CLAUDE.md`
+
+2. 修改目的：用户上传服务端生成的 m4（`Z9517_..._V_C02_E00.50.m4`）对比，希望我们解析的 RSTM 显示效果与之一致。
+
+3. 关键规则沉淀：
+   - **服务端 m4 的 V 做过 Nyquist 折叠**：m4 值域恰好 ±27（= 0.5° 短圈 Nyquist 27.23），而原始编码 `(code-129)/2` 覆盖约 ±64.5。不折叠时大量假速度超出 ±30 色标，表现为颜色混乱、相邻格跳变
+   - 修复：`parseRstmVolume` 解码 V 后按该 cut 的 Nyquist 折叠到 `[-nyquist, nyquist)`：`(((v+n) % 2n)+2n)%2n - n`。W 实测值域 0~12 非负，无需折叠
+   - **对比 m4 必须用同时次**：m4 是 03:17:55，最初误用 00:01:31 的 bz2 对比，得出"平均差 5.66 m/s"的错误结论；同时次下为：仅 m4 有值的点 0.2%、值分布各档占比差 <1%、中位差 1 m/s、平均差 2.57 m/s（差异来自网格半格偏移与邻域回找）
+   - 我们有效点（23.9%）略多于 m4（16.4%）来自邻域回找；若要求严格一致可收紧回找范围
+   - 9099 数据目录的 bz2 与 m4 时次对应关系：`Z_RADR_I_Z9517_20261018031755_...bin.bz2` ↔ `Z9517_20261018031755_UTC_*.m4`
+   - 验证方式：`vue-tsc` 通过；同时次 m4 逐格点对比通过（上述口径）
+
+【2026-10-21 本轮改动（V/W 空白问题：邻域回找 + 数据特性确认）】
+
+1. 修改文件：`src/parse/cinradVolume.ts`、`CLAUDE.md`
+
+2. 修改目的：用户反馈 V / W 比 Python 解析结果多出空白。经四轮诊断确认解析与 Python 完全一致，空白来自数据本身的缺测；同时增加邻域回找改善观感。
+
+3. 关键规则沉淀（诊断结论，后续不要重复排查）：
+   - **V/W 覆盖 46.2%，与 Python 完全一致**：我们 0.5° 层 152,717/330,280 = 46.2%；Python 逻辑独立解析 0.5° 短圈 154,156/333,960 = 46.2%。12 个抽样点逐点对比仅 1 处因“最近邻落到另一圈”有差异 → 解码公式 `(code-Offset)/Scale`、缺测规则 `code≤4`、Scale/Offset 读取位置全部正确
+   - **空白是数据特性，不是 bug**：VCP21D 的 V/W 只在短距离圈（230km）采集（0.5°/1.5° 的长圈 460km 根本没有 V/W 矩），且远距离被雷达质量控制大量剔除 —— 实测 0.5° 短圈 100~230km 缺测 84%、6.0° 层 100km 外 100% 缺测。Python 解析同一文件同样得到这些 nan
+   - **V/W 数组长度天然短于反射率**：0.5° 层 dBZ 1840 库（460km）/ V、W 920 库（230km）；`sampleRstmValue` 与 `volumeToGrid` 均按各字段自身长度寻址，远处越界即无数据
+   - 观感改善：`volumeToGrid` 增加 `pickWithNeighbors` —— 缺测时在 ±2 个方位（同距离库）、±4 个库（本方位）范围内取最近有值。位移量不超过数据自身分辨率（0.98°/250m），整片无回波仍透明。回找后 0.5° 层 V 与 dBZ 的栅格填充率相当（35% vs 34%）
+   - 若用户仍觉得空：优先怀疑对比的不是同时次同仰角（Python 端 matplotlib 常用 `cmap.set_bad()` 把 nan 画成背景色，看起来“没有空白”）
+
+【2026-10-21 本轮改动（服务器产品目录同步为 8 个新产品）】
+
+1. 修改文件：`public/data/products.json`
+
+2. 修改目的：产品列表仍显示旧的 4 个产品（基本反射率/组合反射率/回波顶高/径向速度）——产品目录优先从服务器 `data/products.json` 读取，静态目录 `src/config/products.ts` 只是回退；上一轮只改了静态目录，所以界面不变。现已把服务器目录重写为与静态目录一致的 8 个产品。
+
+3. 关键规则沉淀：
+   - ★ 产品目录有两份，改动必须同步 ★：`public/data/products.json`（运行时优先读取）+ `src/config/products.ts`（服务器不可用时的回退）。只改一处会出现“代码改了界面不变”或“服务器挂了产品列表变样”
+   - 8 个产品：dBZ(反射率，默认) / dBT(原始反射率) / V(径向速度) / W(谱宽) / ZDR(差分反射率) / CC(相关系数) / KDP(差分相移率) / SNRH(信噪比)
+   - 已验证：JSON 合法、8 项、色标全部通过升序/首档透明/存在可见档/RGBA 0~255 校验（否则整表会被回退到静态目录）
+   - 修改 `products.json` 后需硬刷新页面（该文件不带 hash，浏览器可能命中缓存）
+
+【2026-10-21 本轮改动（重写为标准 CINRAD V2 格式 + 8 产品）】
+
+1. 修改文件：`src/parse/cinradVolume.ts`（重写）、`src/types/index.ts`、`src/config/products.ts`（重写）、`src/components/RadarScreen.vue`、`src/api/radarApi.ts`、`AGENTS.md`
+
+2. 修改目的：按用户提供的 Python 项目（Radar.DataService/radar/rio/STANDARD/structures.py）重写 RSTM 解析——原实现按“54 字段层 × 45 组 × 8 块”猜结构且反射率用固定公式（偏差约 13 dBZ），现改为标准格式逐径向逐矩解析，产品目录重写为 8 个矩字段产品。
+
+3. 关键规则沉淀：
+   - 标准格式布局：GENERIC(32)+SITE(128)+TASK(256)+CUT×N(256) → 径向[RADIAL_HEADER(64) + MOMENT_HEADER(32)+数据]×MomentNumber；实测 CutNumber=11（VCP21D，9 个唯一仰角，0.5/1.5° 分长短两圈）
+   - 矩解码与 Python 完全一致：`value=(code-Offset)/Scale`，`code<=4 → 缺测`；Bin Length 1=8 位 / 2=16 位
+   - 实测每径向 7 个矩：dBT(1,scale2/off66) / dBZ(2,2/66) / ZDR(7,16/130) / CC(9,200/5) / ΦDP(10,100/50,16位) / KDP(11,10/50) / SNRH(16,2/20)；V(3,2/129) 与 W(4,2/129) 只在短距离圈出现
+   - ★ 时间基准是 Unix（1970），不是 Python 里的 1971 ★：实测 Seconds 与文件名时刻按 Unix 基准吻合，按 1971 算整体偏一年
+   - ★ 长短圈合并：方位角量化到 1° + 逐字段取库数更多者 ★ —— 长圈反射率到 460km 但无 V/W，短圈有 V/W 只到 230km，整体替换会丢字段
+   - 产品目录重写为 8 个（id 即字段名）：dBZ(默认)/dBT/V/W/ZDR/CC/KDP/SNRH，各配专用色标；ΦDP 解析但不作产品
+   - `parseRstmVolume` 结构校验：Magic=RSTM、Major=2、CutNumber 1~32、库长合法，否则返回 null → 调用方回退合成网格（旧 demo 文件已实测回退正常）
+   - 验证方式：`vue-tsc` 通过；真实 bz2 23 项断言全部通过（9 仰角/360 方位/每层库数 1840·1320·916·492/8 字段值域/时间 2026-10-18T00:01:47/栅格化 77,904 点 -10.5~51 dBZ/取样 8 字段/旧合成回退）
+
+【2026-10-21 本轮改动（RSTM 基数据体接入：仰角层选择 + 栅格化渲染）】
+
+1. 修改文件：`src/types/index.ts`、`src/parse/cinradVolume.ts`、`src/api/radarApi.ts`、`src/store/appStore.ts`、`src/components/RadarScreen.vue`、`src/styles.css`、`AGENTS.md`
+
+2. 修改目的：把上一轮的 RSTM 体解析接入应用——当数据是基数据体（9 仰角层）时，屏头出现仰角选择器，切换仰角即时刷新画面；非基数据体（拼图 / m4 / 旧合成 RSTM）行为不变。
+
+3. 关键规则沉淀：
+   - 取数链路：`fetchRstmVolume(meta)`（LRU 3 条约 54MB + 在途合并）→ 成功则 `volumeToGrid(volume, elevationIndex, field)` 栅格化为 RadarGrid 走既有渲染/范围过滤/取值链路；返回 null（结构校验失败）则回退 `fetchRadarGrid` 合成网格，`setScreenElevations([])` 隐藏选择器
+   - 字段选择：`RadarScreen.PRODUCT_FIELD` 按产品代码映射 RSTM 字段（Z/CR→z、V→v、W→w、ZDR→zdr、KDP→kdp、CC→cc，未列出回退 z），因为渲染链路一次只画一个数值场
+   - 仰角切换是**纯局部操作**：复用组件内 `currentVolume` 重新栅格化 + 重建图层，不重新下载/解压（36MB + 1.5s 解压不能每次切换重来）
+   - `RstmVolume.maxRanges`（层配置 +28）：超过该层最大探测距离的距离库是无效残留数据，栅格化与取样都必须忽略 —— 否则 19.5° 层会因远距离残留噪声把覆盖范围撑大 3 倍（实测 991×790 → 266×222）
+   - `RstmRadial.fields` 改为 `Float32Array` + UNDEF 哨兵（原对象数组方案 448 万个 boxed number 超 100MB，必须用类型化数组）
+   - 每屏独立 `elevations` + `elevationIndex`（store），`setLayout` 新屏不继承仰角（新数据需重新判定）；上传数据清空仰角维度
+   - 验证方式：`vue-tsc` 通过；真实 bz2 端到端 17 项断言全部通过（临时脚本已删除）：9 层/缓存命中/0.5° 与 19.5° 栅格尺寸/Z 130,565 点 -14~68.5dBZ/V 96,886 点 ±14m/s/旧合成文件回退
+
+【2026-10-20 本轮改动（RSTM 基数据体解析：9 仰角 × 6 字段）】
+
+1. 修改文件：`src/parse/cinradVolume.ts`（新建）、`src/parse/cinradParser.ts`（导出 `tryParseHeader`）、`src/types/index.ts`、`AGENTS.md`
+
+2. 修改目的：从 `*_SAD_CAP_FMT.bin(.bz2)` 中解析 9 个仰角层的径向数据，提取 Z / V / W / ZDR / KDP / CC，并支持按经纬度取样。
+
+3. 关键规则沉淀（二进制布局对 9099 真实样本逆向得到）：
+   - 文件头 128 字节 + 9 个仰角层配置（**项跨度不均：512 / 512 / 256×7**，仰角在项内 +128、库长 +20）+ 数据区（3256 起）
+   - 数据区 = 54 个字段层（9 仰角 × 6 圈），每层 45 组；组 = 32 字节组头 + 8 个数据块；块 = 32 字节块头（+24 = 1840 表示 8 位 / 3680 表示 16 位）+ 1840 字节数据
+   - 块步长 1872、组步长 15008、字段层步长 675360；每层 45 个方位，**方位角 = 组序号 × 8°**；库长 250m、8 位库数 1840、16 位（速度）库数 920
+   - 只取第 1 圈（字段层 0~8）构建 9 层数据，6 圈是同一扫描的重复采样
+   - 字段槽位与解码公式**待校准**（集中在 `FIELD_BLOCKS` 与各 `decodeXxx`，调整不影响寻址）：块0=Z、块1=W、块2=ZDR、块3=CC、块4=V(16 位)、块6=KDP
+   - 极坐标换算必须用 **Haversine**：球面余弦定理在 dLon 很小时数值不稳定（实测把 100km 算成 0.1km）
+   - 实测（Z9517 淮安，0.5° 层）：Z -14~68.5 dBZ（32,776 个有效点）、V -13.5~1.4 m/s、ZDR ±7.7 dB 均合理；W / CC / KDP 量级与标准气象值有偏差，需用已知回波校准编码公式
+   - 下一步：UI 接入（仰角层选择器 + 点击地图弹窗展示 6 字段）+ 取数链路缓存 RstmVolume
+   - 验证方式：`vue-tsc` 通过；真实数据 16 项断言全部通过（临时脚本已删除）
+
+【2026-10-20 本轮改动（支持 .bz2 雷达基数据）】
+
+1. 修改文件：`src/utils/bzip2.ts`（新建）、`src/types/seek-bzip.d.ts`（新建）、`src/types/index.ts`、`src/api/radarApi.ts`、`package.json`（新增 `seek-bzip`、`buffer`）、`AGENTS.md`
+
+2. 修改目的：9099 数据目录中的 6 个 `.bin.bz2` 是雷达基数据的常见分发格式，之前被目录扫描跳过；现改为浏览器端解压后走同一解析链路。
+
+3. 关键规则沉淀：
+   - 新增 `utils/bzip2.ts`：seek-bzip 解压 + **注入全局 Buffer polyfill**（seek-bzip 是 Node 时代实现，内部用 `new Buffer()`；浏览器无该全局对象，必须在 decode 前注入）
+   - 前端解压**禁止使用 compressjs**：它在浏览器会触发 amdefine 加载直接报错，只能用于 Node 脚本
+   - 目录扫描不再跳过 bz2：`buildMetaFromFileName` 先剥掉 `.bz2` 判断内部格式，并打 `compressed` 标记
+   - `loadGrid` 新流程：fetch → 校验 `BZh` 魔数 → 解压 → `detectFormat` 按二进制魔数（RSTM / SWAN / diamond 4）识别，不再依赖 `meta.format`
+   - `detectFormat` 顺带修正了原 `guessFormat` 只看元数据的问题（清单缺字段或文件名不规范时按内容纠正）
+   - 实测：6 个 bz2 均为 RSTM，解压 6.96MB → 36.5MB 约 1.5s；RSTM 体数据仍不可解码，解析结果为 400×400 合成网格（`isSynthetic=true`，界面显示“示意数据”）
+   - 性能：解压同步阻塞主线程约 1.5s，靠 LRU 缓存每个文件只解压一次；首次播放各时次仍会卡顿，Worker 解压留作后续优化
+   - 验证方式：`vue-tsc` 通过；`npm run build` 成功（主包 +40KB，来自 seek-bzip + buffer）；目录扫描 7 条、解压产物、魔数识别、完整解析、无全局 Buffer 时 polyfill 生效共 14 项断言通过（临时脚本已删除）
+
+【2026-10-20 本轮改动（雷达数据源切换到 9099）】
+
+1. 修改文件：`src/config/dataSource.ts`（新建）、`src/api/radarApi.ts`、`vite.config.ts`、`AGENTS.md`
+
+2. 修改目的：雷达数据文件改为从 `http://localhost:9099/data/radarData/` 获取。该静态服务未返回 CORS 头，直接用绝对地址会被浏览器拦截，因此前端走同源路径 `/radar-data/`，由 Vite 代理转发。
+
+3. 关键规则沉淀：
+   - `DATA_BASE_URL = '/radar-data/'`；`vite.config.ts` 的 proxy 将 `/radar-data` 重写为 9099 的 `/data/radarData`
+   - 清单获取顺序：配置显式地址 → 数据服务 `manifest.json` → **扫描目录索引**（nginx autoindex，解析 `<a href>`）→ 本地 `data/manifest.json`
+   - 目录扫描只纳入 `.m4` / `.bin`；`.bz2` 跳过并汇总告警（浏览器无法解压，compressjs 仅 Node 可用）
+   - `resolveDataUrl`：绝对/协议相对 URL 与含 `/` 的路径原样，纯文件名拼 `DATA_BASE_URL`
+   - 实测 9099 目录：6 个 `.bz2` + 1 个 `.m4` → 清单 1 条；m4 为 990×828（819,720 点），解析约 190ms，缺测 765,691 点
+   - 生产部署需 nginx 配置同样的 `/radar-data/` 反向代理；产品目录/应用配置仍走本地 `data/`
+   - 验证方式：`vue-tsc` 通过；经 Vite 代理的真实数据端到端断言全部通过（临时脚本已删除）
 
 【2026-10-20 本轮改动（项目整理：文档同步 + 样式去重）】
 

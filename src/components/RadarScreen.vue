@@ -18,6 +18,8 @@ import {
   getProductByIdSafe,
   setScreenStatus,
   setScreenSmooth,
+  setScreenElevations,
+  setScreenElevation,
   setActiveScreen
 } from '../store/appStore';
 import { createRadarMap, applyBaseMap, registerMapLink, unregisterMapLink } from '../render/mapManager';
@@ -31,13 +33,21 @@ import {
   sampleGridValue
 } from '../render/radarRenderer';
 import { valueRangeKey } from '../utils/range';
-import { fetchRadarGrid, buildFileMetaFromTemplate, parseUploadedFile, RadarFileMissingError } from '../api/radarApi';
+import {
+  fetchRadarGrid,
+  fetchRstmVolume,
+  buildFileMetaFromTemplate,
+  parseUploadedFile,
+  RadarFileMissingError
+} from '../api/radarApi';
+import { volumeToGrid, MOMENT_FIELD } from '../parse/cinradVolume';
 import { ElMessage } from 'element-plus';
 import Legend from './Legend.vue';
 import * as L from 'leaflet';
 import type { LMap } from '@quickearth/leaflet';
 import type { LPixelLayer } from '@quickearth/leaflet';
-import type { RadarGrid, ValueRange } from '../types';
+import type { RadarGrid, RstmVolume, ValueRange } from '../types';
+import type { RstmField } from '../parse/cinradVolume';
 
 /** 组件入参：屏序号 */
 const props = defineProps<{ screenId: number }>();
@@ -56,6 +66,13 @@ let layerProductId = '';
 let layerThreshold = Number.NEGATIVE_INFINITY; // 当前图层渲染时的弱值阈值
 let layerSmooth = false;                       // 当前图层渲染时的平滑开关（每屏独立）
 let layerRange: ValueRange | null = null;      // 当前图层使用的色标数值范围（null=全范围）
+/**
+ * 当前数据的 RSTM 基数据体（9 仰角层）：非 null 表示本屏数据支持仰角切换。
+ * 普通拼图 / m4 / 合成 RSTM 为 null（无仰角维度）。
+ */
+let currentVolume: RstmVolume | null = null;
+/** 当前图层使用的仰角索引（-1 表示尚未渲染过仰角数据） */
+let layerElevation = -1;
 /** 上一次自动定位使用的数据范围（同范围不重复定位，避免打断用户的缩放/平移） */
 let fittedBounds: L.LatLngBounds | null = null;
 
@@ -89,6 +106,19 @@ function clearLayer(): void {
   layerProductId = '';
   layerThreshold = Number.NEGATIVE_INFINITY;
   layerRange = null;
+  currentVolume = null;
+  layerElevation = -1;
+}
+
+/**
+ * 当前产品应对应的 RSTM 字段。
+ *
+ * 产品 id 与字段名一致（见 config/products.ts：dBZ/dBT/V/W/ZDR/CC/KDP/SNRH），
+ * 因为标准格式一个仰角层含 9 个矩（字段），而渲染链路一次只画一个数值场。
+ * 未知 id（理论不存在）回退滤波后反射率 dBZ。
+ */
+function fieldForProduct(productId: string): RstmField {
+  return productId in MOMENT_FIELD ? (productId as RstmField) : 'dBZ';
 }
 
 /**
@@ -177,20 +207,35 @@ async function refresh(): Promise<void> {
   }
 
   try {
-    // 时间未变 → 局部更新（产品色标 / 范围 / 平滑模式），不重建图层（同步操作，无需校验 token）
+    // 时间未变 → 局部更新（仰角 / 产品色标 / 范围 / 平滑模式），不重新下载数据
     if (layer && layerGrid && layerTime === sc.time) {
+      // ① 仰角切换（RSTM 基数据体）：复用已解析的体数据重新栅格化，
+      //    只重建图层，不重新下载/解压（36MB 文件 + 1.5s 解压不能每次切换都来一遍）
+      if (currentVolume && layerElevation !== sc.elevationIndex) {
+        const grid = volumeToGrid(currentVolume, sc.elevationIndex, fieldForProduct(product.id));
+        if (!grid) return; // 该仰角层无有效数据时保持原画面
+        removeRadar(map, layer);
+        layerGrid = grid;
+        layer = renderRadar(map, grid, product, sc.smooth, range);
+        layerElevation = sc.elevationIndex;
+        // 不同仰角层覆盖范围不同，重新定位到新数据范围
+        fitToGrid(grid);
+        return;
+      }
+
+      // ② 产品变化（阈值可能变）+ 范围可能同时变化：统一按原始网格重建过滤口径
       if (layerProductId !== product.id) {
-        // 产品变化（阈值可能变）+ 范围可能同时变化：统一按原始网格重建过滤口径
         updateRadarProduct(layer, layerGrid, layerThreshold, product, sc.smooth, range, layerRange);
         layerProductId = product.id;
         layerThreshold = firstVisibleThreshold(product);
         layerRange = range;
       } else if (valueRangeKey(layerRange) !== valueRangeKey(range)) {
-        // 仅范围变化：必须重建数据源（放宽范围时要恢复之前被裁掉的值），
-        // 并强制刷新绘制选项触发 GL 重绘（只换数据源画面不会立即更新）
+        // ③ 仅范围变化：必须重建数据源（放宽范围时要恢复之前被裁掉的值），
+        //    并强制刷新绘制选项触发 GL 重绘（只换数据源画面不会立即更新）
         updateRadarRange(layer, layerGrid, product, sc.smooth, range);
         layerRange = range;
       } else if (layerSmooth !== sc.smooth) {
+        // ④ 仅平滑开关变化
         updateRadarSmooth(layer, product, sc.smooth);
       }
       layerSmooth = sc.smooth;
@@ -199,13 +244,36 @@ async function refresh(): Promise<void> {
 
     // 时间变化或首次 → 拉取并解析数据，重建图层
     setScreenStatus(props.screenId, '加载中…');
-    // 取消上一次仍在下载的请求：否则切时次时会有多个 35MB 文件并行下载
+    // 取消上一次仍在下载的请求：否则切时次时会有多个大文件并行下载
     inflight?.abort();
     inflight = new AbortController();
-    const grid = await fetchRadarGrid(file, product.id, inflight.signal);
+    const signal = inflight.signal;
+
+    // —— RSTM 单站基数据：优先解析 9 仰角层体数据（真实 Z/V/W/ZDR/KDP/CC）——
+    //    旧合成文件 / 损坏文件解析不出体结构 → 回退合成网格（与改造前行为一致）
+    let grid: RadarGrid;
+    let volume: RstmVolume | null = null;
+
+    if (file.format === 'rstm') {
+      volume = await fetchRstmVolume(file, signal);
+      if (volume) {
+        grid = volumeToGrid(volume, sc.elevationIndex, fieldForProduct(product.id)) as RadarGrid;
+      } else {
+        setScreenElevations(props.screenId, []);
+        grid = await fetchRadarGrid(file, product.id, signal);
+      }
+    } else {
+      setScreenElevations(props.screenId, []);
+      grid = await fetchRadarGrid(file, product.id, signal);
+    }
 
     // 请求期间用户又切了时次 / 产品（或上传了文件）→ 本次结果作废
     if (token !== refreshToken) return;
+
+    // 仰角列表写进 store：非空时屏头显示仰角选择器
+    currentVolume = volume;
+    layerElevation = volume ? sc.elevationIndex : -1;
+    if (volume) setScreenElevations(props.screenId, volume.elevations);
 
     removeRadar(map, layer);
     layerGrid = grid;
@@ -295,6 +363,10 @@ async function onUploadChange(e: Event): Promise<void> {
     layerThreshold = firstVisibleThreshold(product);
     layerSmooth = sc.smooth;
     layerRange = sc.valueRange ?? null;
+    // 上传数据不是基数据体（parseUploadedFile 只支持 .bin/.m4），清除仰角维度
+    currentVolume = null;
+    layerElevation = -1;
+    setScreenElevations(props.screenId, []);
     // 上传的数据区域可能与当前视野不同，重新定位到新数据范围
     fitToGrid(grid);
     setScreenStatus(props.screenId, '上传数据');
@@ -372,15 +444,24 @@ onBeforeUnmount(() => {
   map = null;
   layer = null;
   layerGrid = null;
+  currentVolume = null;
 });
 
-// 本屏 产品/时间/平滑开关 变化 → 自动重渲染
+// 本屏 产品/时间/平滑开关/色标范围/仰角 变化 → 自动重渲染
 watch(
   () => {
-    // 依赖本屏四个可变字段；按 id 取屏，避免依赖数组下标
+    // 依赖本屏五个可变字段；按 id 取屏，避免依赖数组下标
     const s = screen.value;
     return s
-      ? s.productId + '|' + s.time + '|' + (s.smooth ? 1 : 0) + '|' + valueRangeKey(s.valueRange)
+      ? s.productId +
+          '|' +
+          s.time +
+          '|' +
+          (s.smooth ? 1 : 0) +
+          '|' +
+          valueRangeKey(s.valueRange) +
+          '|' +
+          s.elevationIndex
       : '';
   },
   () => refresh()
@@ -398,6 +479,22 @@ watch(
       </span>
       <span v-if="status" class="screen-status">{{ status }}</span>
       <span v-if="isActive" class="active-dot">●</span>
+      <!--
+        仰角层选择（仅 RSTM 基数据体显示）：该格式一个文件含 9 个仰角层
+        （0.5° ~ 19.5°），每层是独立的一次扫描，可按需切换查看。
+        非基数据体（拼图 / m4 / 合成 RSTM）时 elevations 为空、选择器隐藏。
+      -->
+      <select
+        v-if="screen?.elevations.length"
+        class="screen-elev"
+        :value="screen.elevationIndex"
+        title="选择仰角层（RSTM 基数据 9 层）"
+        @change="setScreenElevation(screenId, Number(($event.target as HTMLSelectElement).value))"
+      >
+        <option v-for="(e, i) in screen.elevations" :key="i" :value="i">
+          {{ e.toFixed(1) }}°
+        </option>
+      </select>
       <!-- 本屏平滑开关（每屏独立，便于多屏对比平滑效果） -->
       <label class="screen-smooth" title="平滑=双线性插值渲染；不平滑=格点填色（原始色块）">
         <input

@@ -33,7 +33,7 @@
  * ────────────────────────────────────────────────────────────────────────
  */
 
-import type { RadarFileMeta, RadarGrid } from '../types';
+import type { RadarFileMeta, RadarGrid, RstmVolume } from '../types';
 import { parseRSTM } from '../parse/cinradParser';
 import { parseRADAMOSAIC, isRADAMOSAIC } from '../parse/mosaicParser';
 import { isMicapsM4, parseMicapsM4 } from '../parse/micapsM4Parser';
@@ -41,6 +41,12 @@ import { findProduct } from './productApi';
 import { digits14ToISO, isoToMs, msToISO } from '../utils/datetime';
 // 取数统一走带超时的 fetch：网络半开时不能永久停在“加载中…”
 import { fetchWithTimeout } from '../utils/http';
+// 雷达数据服务基地址（默认经 /radar-data/ 代理到 9099）
+import { DATA_BASE_URL } from '../config/dataSource';
+// .bz2 基数据在浏览器端解压（seek-bzip + buffer polyfill）
+import { decompressBzip2, isBzip2Data } from '../utils/bzip2';
+// RSTM 基数据体（9 仰角层）解析
+import { parseRstmVolume } from '../parse/cinradVolume';
 
 /** 数据文件不存在（HTTP 404）专用错误：UI 据此提示“该时次无数据”而非“加载失败” */
 export class RadarFileMissingError extends Error {
@@ -51,12 +57,15 @@ export class RadarFileMissingError extends Error {
 }
 
 /**
- * 把相对文件名解析为可 fetch 的地址：
- *   - 含 / 或 ://（模板构造的路径、绝对 URL）→ 原样使用
- *   - 纯文件名（清单模式）→ 相对 data/ 目录
+ * 把清单中的文件地址解析为可 fetch 的完整地址：
+ *   - 绝对 URL / 协议相对 URL → 原样（配置里可直接写服务器地址）
+ *   - 含 / 的相对路径（模板构造的文件名）→ 原样
+ *   - 纯文件名（目录扫描 / 清单）→ 拼接数据服务基地址
  */
 function resolveDataUrl(binFile: string): string {
-  return /[/]|:\/\//.test(binFile) ? binFile : 'data/' + binFile;
+  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(binFile) || binFile.startsWith('//')) return binFile;
+  if (binFile.includes('/')) return binFile;
+  return DATA_BASE_URL + binFile;
 }
 
 /**
@@ -78,19 +87,120 @@ export function buildFileMetaFromTemplate(template: string, time: string): Radar
   };
 }
 
-/**
- * 获取雷达文件清单（清单模式）。
- * @param url 清单地址（默认 data/manifest.json，可传入配置指定的任意地址）
- * @returns RadarFileMeta[] 清单数组（已按观测时刻升序）
- */
-export async function fetchRadarFileList(url = 'data/manifest.json'): Promise<RadarFileMeta[]> {
+/** 加载并校验 JSON 清单（统一按观测时刻升序） */
+async function loadManifest(url: string): Promise<RadarFileMeta[]> {
   const resp = await fetchWithTimeout(url);
   if (!resp.ok) {
     throw new Error('加载清单 ' + url + ' 失败：HTTP ' + resp.status);
   }
   const list = (await resp.json()) as RadarFileMeta[];
+  if (!Array.isArray(list)) throw new Error('清单格式非法（应为数组）：' + url);
   // 双保险：确保按时间升序（时间轴顺序依赖）
   return list.sort((a, b) => (a.time < b.time ? -1 : 1));
+}
+
+/** 目录索引中明显不是雷达数据的文件（在解析 href 时先排除） */
+const NON_DATA_EXT = /\.(json|txt|html?|css|js|png|jpe?g|gif|svg|ico|map)$/i;
+
+/**
+ * 从文件名推断清单项；无法识别扩展名或没有 14 位时刻时返回 null。
+ *
+ * 压缩文件处理：`.bz2` 只是分发压缩，不是数据格式本身。
+ * 先剥掉 `.bz2` 再判断内部格式，并打上 `compressed` 标记；
+ * 取数阶段解压后还会用二进制魔数复核（见 detectFormat），文件名不规范也能纠正。
+ */
+function buildMetaFromFileName(name: string): RadarFileMeta | null {
+  const t = name.match(/(\d{14})/);
+  if (!t) return null;
+
+  const compressed = /\.bz2$/i.test(name);
+  const plain = compressed ? name.replace(/\.bz2$/i, '') : name;
+
+  let format: RadarFileMeta['format'];
+  if (/\.m4$/i.test(plain)) format = 'm4';
+  else if (/RADAMOSAIC/i.test(plain)) format = 'mosaic';
+  else if (/\.bin$/i.test(plain)) format = 'rstm';
+  else return null;
+
+  // RSTM 命名：Z_RADR_I_Z9517_...；m4 命名：Z9517_20261018..._dBZ_...
+  const station = plain.match(/_I_(Z[A-Z0-9]+)_/) ?? plain.match(/^(Z[A-Z0-9]+)_/);
+  return {
+    file: name,
+    binFile: name, // 纯文件名：取数时拼数据服务基地址
+    time: digits14ToISO(t[1]),
+    stationId: station?.[1] ?? (format === 'mosaic' ? 'RADAMOSAIC' : ''),
+    stationName: station?.[1] ?? '',
+    hasData: true,
+    format,
+    compressed
+  };
+}
+
+/**
+ * 扫描静态服务器的目录索引（nginx autoindex 的 <a href> 列表）自动生成清单。
+ *
+ * 纳入的格式（浏览器端均可处理）：
+ *   - .m4      ：MICAPS 文本
+ *   - .bin     ：SWAN 拼图 / CINRAD RSTM（按文件名判断，取数时魔数复核）
+ *   - .bin.bz2 ：同上，取数阶段用 seek-bzip 在浏览器端解压
+ */
+async function scanDataDirectory(): Promise<RadarFileMeta[]> {
+  const resp = await fetchWithTimeout(DATA_BASE_URL);
+  if (!resp.ok) throw new Error('目录索引不可用：HTTP ' + resp.status);
+  const html = await resp.text();
+
+  const names = Array.from(html.matchAll(/href="([^"?/][^"]*)"/g))
+    .map((m) => decodeURIComponent(m[1]))
+    .filter((n) => !n.endsWith('/') && !NON_DATA_EXT.test(n));
+
+  const files: RadarFileMeta[] = [];
+  let compressedCount = 0;
+
+  for (const name of names) {
+    const meta = buildMetaFromFileName(name);
+    if (!meta) continue;
+    if (meta.compressed) compressedCount++;
+    files.push(meta);
+  }
+
+  if (compressedCount > 0) {
+    console.info(
+      `[radarApi] 目录中含 ${compressedCount} 个 .bz2 压缩文件，将在浏览器端解压后解析`
+    );
+  }
+  if (files.length === 0) throw new Error('目录中没有可解析的雷达文件');
+
+  return files.sort((a, b) => (a.time < b.time ? -1 : 1));
+}
+
+/**
+ * 获取雷达文件清单（清单模式）。
+ *
+ * 数据源为外部静态服务（默认 /radar-data/ → 9099），按以下顺序尝试：
+ *   1) 配置显式指定的清单地址（严格模式，失败即抛错）；
+ *   2) 数据服务根下的 manifest.json；
+ *   3) 扫描目录索引自动生成（.bz2 会纳入，取数时浏览器端解压）；
+ *   4) 回退本地 data/manifest.json（离线 demo）。
+ *
+ * @param url 可选：配置指定的清单地址
+ * @returns RadarFileMeta[]（已按观测时刻升序）
+ */
+export async function fetchRadarFileList(url?: string): Promise<RadarFileMeta[]> {
+  if (url) return loadManifest(url);
+
+  try {
+    return await loadManifest(DATA_BASE_URL + 'manifest.json');
+  } catch (e) {
+    console.warn('[radarApi] 数据服务未提供 manifest.json，改为扫描目录索引：', e);
+  }
+
+  try {
+    return await scanDataDirectory();
+  } catch (e) {
+    console.warn('[radarApi] 目录索引不可用，回退本地 data/manifest.json：', e);
+  }
+
+  return loadManifest('data/manifest.json');
 }
 
 /**
@@ -152,10 +262,35 @@ export async function parseUploadedFile(file: File, productId: string): Promise<
 }
 
 /**
- * 从文件名推断格式（清单缺失 format 字段时的兜底判断）：
- *   - Z_OTHE_RADAMOSAIC_*.bin   → 'mosaic'
- *   - Z_RADR_I_Z95xx_*.bin(.bz2)→ 'rstm'
- *   - *.m4                      → 'm4'
+ * 从二进制内容识别格式（取数阶段唯一入口）。
+ *
+ * 识别顺序：
+ *   1) 魔数：'RSTM' → rstm；'SWAN' → mosaic；
+ *   2) 文本：以 "diamond 4" 开头 → m4；
+ *   3) 都不匹配 → 回退清单/文件名推断（解析器内部仍有兜底）。
+ *
+ * ★ 为什么必须以内容为准 ★
+ *   .bz2 解压前不知道真实格式；清单可能缺失 format 或与内容不符；
+ *   文件名也可能不规范。只看元数据会把 SWAN 拼图误当 RSTM 解析。
+ */
+function detectFormat(buffer: ArrayBuffer, meta: RadarFileMeta): RadarFileMeta['format'] {
+  const head = new Uint8Array(buffer, 0, Math.min(16, buffer.byteLength));
+  const magic = String.fromCharCode(...head);
+
+  if (magic.startsWith('RSTM')) return 'rstm';
+  if (magic.startsWith('SWAN')) return 'mosaic';
+
+  // MICAPS m4 为文本：首行形如 "diamond 4 2024..."（大小写不敏感）
+  if (/^\s*diamond\s+4/i.test(new TextDecoder('utf-8').decode(head))) return 'm4';
+
+  return guessFormat(meta);
+}
+
+/**
+ * 按元数据推断格式（内容识别失败时的兜底）。
+ *
+ * 注意：`format` 在类型上是必填，但清单来自外部 JSON，
+ * 运行时仍可能缺字段，因此保留空值判断，不写成死分支。
  */
 function guessFormat(meta: RadarFileMeta): RadarFileMeta['format'] {
   if (meta.format) return meta.format;
@@ -273,6 +408,104 @@ export function gridCacheSize(): number {
   return gridCache.size;
 }
 
+/* ───────────────── RSTM 基数据体（9 仰角层）取数 ───────────────── */
+
+/**
+ * RSTM 基数据体的 LRU 缓存。
+ *
+ * 体积远大于普通网格：9 层 × 45 方位 × 6 字段 × 1840 库 ≈ 448 万个 Float32
+ * （约 18MB/份），因此上限设为 3 份（约 54MB），命中范围覆盖“播放 + 仰角切换”。
+ */
+const volumeCache = new Map<string, RstmVolume>();
+const VOLUME_CACHE_LIMIT = 3;
+
+/** 在途请求合并表：多屏同步请求同一文件时只下载 + 解压 + 解析一次 */
+const pendingVolumes = new Map<string, Promise<RstmVolume | null>>();
+
+/**
+ * 获取 RSTM 基数据体（带缓存与并发合并）。
+ *
+ * 与 fetchRadarGrid 的分工：
+ *   - 本函数返回**真实基数据体**（9 仰角 × 45 方位 × 6 字段）；
+ *     文件不是基数据体格式（旧合成文件 / 损坏文件）时返回 null，
+ *     调用方回退 fetchRadarGrid 的合成网格。
+ *   - 404 / 网络错误仍会抛出，与 fetchRadarGrid 的错误语义保持一致。
+ *
+ * @param meta   文件清单项
+ * @param signal 取消信号（切换时次时 abort）
+ */
+export async function fetchRstmVolume(
+  meta: RadarFileMeta,
+  signal?: AbortSignal
+): Promise<RstmVolume | null> {
+  const key = meta.binFile;
+
+  const cached = volumeCache.get(key);
+  if (cached) {
+    // 命中后移到末尾，维护“最近使用序”
+    volumeCache.delete(key);
+    volumeCache.set(key, cached);
+    return cached;
+  }
+
+  const pending = pendingVolumes.get(key);
+  if (pending) return pending;
+
+  const task = loadVolume(meta, signal)
+    .then((vol) => {
+      // 非基数据体格式不缓存（下次仍要回退合成），避免占满 3 个位置
+      if (vol) {
+        volumeCache.delete(key);
+        volumeCache.set(key, vol);
+        while (volumeCache.size > VOLUME_CACHE_LIMIT) {
+          const oldest = volumeCache.keys().next().value;
+          if (oldest === undefined) break;
+          volumeCache.delete(oldest);
+        }
+      }
+      return vol;
+    })
+    .finally(() => {
+      pendingVolumes.delete(key);
+    });
+
+  pendingVolumes.set(key, task);
+  return task;
+}
+
+/**
+ * 下载并解析 RSTM 基数据体（不含缓存）。
+ *
+ * 流程：fetch（必要时解压 bz2）→ parseRstmVolume（结构校验 + 解析）。
+ * @returns RstmVolume；文件不是基数据体格式时返回 null（不抛错）
+ */
+async function loadVolume(
+  meta: RadarFileMeta,
+  signal?: AbortSignal
+): Promise<RstmVolume | null> {
+  const url = resolveDataUrl(meta.binFile);
+  const resp = await fetchWithTimeout(url, undefined, signal);
+  if (resp.status === 404) {
+    throw new RadarFileMissingError(url);
+  }
+  if (!resp.ok) {
+    throw new Error('加载 ' + meta.binFile + ' 失败：HTTP ' + resp.status);
+  }
+
+  let buf = await resp.arrayBuffer();
+
+  // .bz2 压缩的基数据：先解压再解析（与 loadGrid 的解压分支一致）
+  if (meta.compressed || /\.bz2$/i.test(meta.binFile)) {
+    if (!isBzip2Data(buf)) {
+      throw new Error(meta.binFile + ' 不是有效的 bzip2 文件');
+    }
+    buf = decompressBzip2(buf);
+  }
+
+  // parseRstmVolume 会做结构校验：合成/损坏文件返回 null → 调用方走合成兜底
+  return parseRstmVolume(buf);
+}
+
 /**
  * 真正的下载 + 解析实现（不含缓存）。
  *
@@ -295,17 +528,35 @@ async function loadGrid(
   if (!resp.ok) {
     throw new Error('加载 ' + meta.binFile + ' 失败：HTTP ' + resp.status);
   }
-  const buf = await resp.arrayBuffer();
 
-  // —— 2) 格式识别并分派解析器 ——
+  let buf = await resp.arrayBuffer();
+
+  // —— 1.5) bzip2 解压 ——
+  // 雷达基数据常以 .bin.bz2 分发，浏览器端用 seek-bzip 解压后再解析。
+  // 解压后 buf 就是原始基数据，后续格式识别与未压缩文件完全一致。
+  if (meta.compressed || /\.bz2$/i.test(meta.binFile)) {
+    if (!isBzip2Data(buf)) {
+      throw new Error(meta.binFile + ' 不是有效的 bzip2 文件');
+    }
+    try {
+      buf = decompressBzip2(buf);
+    } catch (e) {
+      // 解压失败通常是文件损坏或传输被截断，带上原因便于排查
+      const reason = e instanceof Error ? e.message : String(e);
+      throw new Error(meta.binFile + ' bzip2 解压失败：' + reason);
+    }
+  }
+
+  // —— 2) 格式识别并分派解析器（魔数优先：bz2 解压后才知真实格式） ——
+  const format = detectFormat(buf, meta);
   let grid: RadarGrid;
-  if (guessFormat(meta) === 'm4') {
+  if (format === 'm4') {
     // MICAPS 第 4 类：文本格式
     const text = new TextDecoder('utf-8').decode(buf);
     if (!isMicapsM4(text)) throw new Error(meta.binFile + ' 不是合法的 MICAPS diamond 4 文件');
     grid = parseMicapsM4(text, { product, fallbackTime: meta.time });
     grid.time = meta.time || grid.time;
-  } else if (meta.format === 'mosaic' || isRADAMOSAIC(buf)) {
+  } else if (format === 'mosaic' || isRADAMOSAIC(buf)) {
     // SWAN 雷达三维拼图：取默认高度层的反射率。
     // 先不传 time，让解析器从文件头取时刻，再与清单交叉校验——原实现
     // 无条件以文件名为准，实测出现过「文件名 2024、文件头 2022」的数据

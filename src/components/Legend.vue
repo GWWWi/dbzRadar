@@ -156,36 +156,51 @@ function resetRange(): void {
 
 /* ─────────────── 经纬度查询 ─────────────── */
 
-/** 输入框内容："经度, 纬度" */
-const coordInput = ref('');
+/** 经度输入框内容 */
+const lonInput = ref('');
+
+/** 纬度输入框内容 */
+const latInput = ref('');
 
 /** 校验错误提示（空串表示无错误） */
 const coordError = ref('');
 
 /**
- * 解析输入并提交查询。
+ * 解析输入并提交查询（经度、纬度分开填写）。
  *
- * 支持的分隔符：英文/中文逗号、空格（如 `118.83, 33.24`、`118.83 33.24`）。
- * 顺序固定为「经度在前、纬度在后」（与地图标注一致，避免与常见经纬度写法混淆）。
- * 校验范围与地图点击取值无关，只拦截明显非法输入。
+ * 容错：如果把「118.9269,33.6378」整串粘进经度框、纬度框为空，
+ * 会按逗号/空格拆成两个值，省去手动分开。
+ *
+ * 校验只拦截明显非法输入，范围与地图点击取值无关。
  */
 function onQuery(): void {
-  const text = coordInput.value.trim();
-  if (!text) {
-    coordError.value = '请输入「经度, 纬度」';
+  let lonText = lonInput.value.trim();
+  let latText = latInput.value.trim();
+
+  // 整串坐标粘到单框时的自动拆分
+  if (!latText && /[,，\s]/.test(lonText)) {
+    const parts = lonText.split(/[,，\s]+/).filter(Boolean);
+    if (parts.length >= 2) {
+      lonText = parts[0];
+      latText = parts[1];
+      lonInput.value = lonText;
+      latInput.value = latText;
+    }
+  }
+
+  if (!lonText || !latText) {
+    coordError.value = '请填写经度和纬度';
     return;
   }
 
-  const parts = text.split(/[,，\s]+/).filter(Boolean);
-  if (parts.length < 2) {
-    coordError.value = '格式：经度, 纬度';
+  const lon = Number(lonText);
+  const lat = Number(latText);
+  if (!Number.isFinite(lon)) {
+    coordError.value = '经度必须是数字';
     return;
   }
-
-  const lon = Number(parts[0]);
-  const lat = Number(parts[1]);
-  if (!Number.isFinite(lon) || !Number.isFinite(lat)) {
-    coordError.value = '经纬度必须是数字';
+  if (!Number.isFinite(lat)) {
+    coordError.value = '纬度必须是数字';
     return;
   }
   if (lon < -180 || lon > 180) {
@@ -368,18 +383,27 @@ onBeforeUnmount(() => {
     </div>
 
     <!--
-      经纬度查询：输入「经度, 纬度」→ 在该位置弹窗显示本屏数值。
+      经纬度查询：经度、纬度分开填 → 在该位置弹窗显示本屏数值。
       ★ 容器必须 @pointerdown.stop ★ 否则按下输入框会触发浮层拖拽
         并 setPointerCapture，输入框拿不到焦点（与重置按钮同一坑）。
     -->
     <div class="legend-query" @pointerdown.stop>
       <input
-        v-model="coordInput"
+        v-model="lonInput"
         class="legend-query-input"
         type="text"
         inputmode="decimal"
-        placeholder="经度, 纬度"
-        title="输入「经度, 纬度」，如 118.83, 33.24"
+        placeholder="经度"
+        title="经度（-180 ~ 180），如 118.9269"
+        @keydown.enter="onQuery"
+      />
+      <input
+        v-model="latInput"
+        class="legend-query-input"
+        type="text"
+        inputmode="decimal"
+        placeholder="纬度"
+        title="纬度（-90 ~ 90），如 33.6378"
         @keydown.enter="onQuery"
       />
       <button class="legend-query-btn" @click.stop="onQuery">查询</button>

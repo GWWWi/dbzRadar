@@ -62,7 +62,7 @@ src/
     TimeAxis.vue               Canvas 刻度轴（样式参考 timeline-canvas）：拖拽左右任意平移（不触发取数），松手后吸附最近时次并 emit('change') 加载对应文件；点击跳转/滚轮缩放；顶条绿色刻度=有文件时次；受控组件；重绘经 rAF 合并，marks 升序二分只画可见区间
     Timeline.vue               底部时间轴（syncPlay 时广播全部屏；TimeAxis 刻度轴 + 上一/下一时次；Element Plus 控件：el-date-picker 选锚点（配置模式，预报起报/实况结束，改选重生成时间轴）+ el-date-picker 跳转时次（显示 YYYY-MM-DD HH:mm，值 YYYYMMDDHHmm，吸附最近可用时次））
     RadarScreen.vue            ★ 单屏容器：建图/watch 取数渲染/点击取值 popup/无文件提示“该时次无数据”/屏头仰角选择（仅 RSTM 基数据体 9 层显示）/屏头平滑开关（每屏独立）/屏头上传按钮（每屏独立，格式识别后本屏渲染）/卸载销毁
-    Legend.vue                 右下角色标浮层（可拖拽；每屏独立的色标范围：自绘双圆点手柄叠加在色标条上，只显示所选区间颜色，范围外透明；底部「经度, 纬度」输入框 → emit query 交给屏内取值弹窗）
+    Legend.vue                 右下角色标浮层（可拖拽；每屏独立的色标范围：自绘双圆点手柄叠加在色标条上，只显示所选区间颜色，范围外透明；底部「经度 / 纬度」两个输入框 → emit query 交给屏内取值弹窗）
 ```
 
 ## 4. 核心数据契约（src/types/index.ts）

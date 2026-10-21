@@ -51,10 +51,33 @@ export function createRadarMap(el: string | HTMLElement): LMap {
     crs: L.CRS.EPSG3857,
     fadeAnimation: false,
     zoomControl: true,
-    preferCanvas: true
+    preferCanvas: true,
+    // 关闭角落的版权条：QE 构造器默认已把它设为 false，这里显式声明防版本变化；
+    // 平台自带色标图例（Legend.vue），不需要地图内的版权标识
+    attributionControl: false
   });
   map.setView(DEFAULT_VIEW, DEFAULT_ZOOM);
+
+  // 兜底清理：QE 的底图/图层在初始化后可能再挂上 attribution 条
+  const container = map.getContainer();
+  stripAttribution(container);
+  // QE 的图层是异步加载的，稍后再清一次
+  setTimeout(() => stripAttribution(container), 800);
+
   return map;
+}
+
+/**
+ * 移除地图角落的版权标识（Leaflet 的 attribution 条）。
+ *
+ * ★ 为什么需要运行时清理 ★
+ *   QE 的 LMap 构造器会把 `attributionControl` 置为 false，但它的底图/图层
+ *   在异步初始化时仍可能通过 `map.attributionControl.addAttribution(...)` 挂上
+ *   版权文本，表现为地图左下/右下角出现一条小字标识。
+ *   平台自带色标图例，这里统一移除（CSS 里也有同样的兜底）。
+ */
+function stripAttribution(el: HTMLElement): void {
+  el.querySelectorAll('.leaflet-control-attribution').forEach((node) => node.remove());
 }
 
 /* ───────────────────────── 底图：行政（天地图）/ 国界（矢量） ───────────────────────── */

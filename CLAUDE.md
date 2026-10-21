@@ -20,6 +20,59 @@
 
 # 迭代变更日志（按时间倒序）
 
+【2026-10-21 本轮改动（经纬度分开输入）】
+
+1. 修改文件：`src/components/Legend.vue`、`src/styles.css`、`AGENTS.md`、`CLAUDE.md`
+
+2. 修改目的：图例底部的坐标查询原来是单框「经度, 纬度」，改为**经度、纬度分开两个输入框**（更直观、少一次格式约定）。
+
+3. 关键规则沉淀：
+   - 两个输入框 `flex: 1 1 0` 等分，查询按钮 `flex: 0 0 auto` 不被挤扁（图例总宽 220px，各框约 88px）
+   - 校验按字段分别提示：经度 -180~180、纬度 -90~90、非数字、缺项
+   - **容错**：把「118.9269,33.6378」整串粘进经度框且纬度框为空时，自动按逗号/空格拆成两个值
+   - 两个框都支持回车提交；容器仍保持 `@pointerdown.stop`（否则触发浮层拖拽、输入框拿不到焦点）
+   - 验证方式：`vue-tsc` 通过、0 诊断；交互需在浏览器确认
+
+【2026-10-21 本轮改动（取值区分“有值但图上透明”与“真无数据”）】
+
+1. 修改文件：`src/components/RadarScreen.vue`、`CLAUDE.md`
+
+2. 修改目的：用户查 (33.6378, 118.9269) 得到“没有查到”，但该点原始值确实是 **-5.00 dBZ**。原因是 dBZ 产品首个可见档为 5 dBZ，取值口径「图上透明 = 取值空」把弱回波判成了无数据。
+
+3. 关键规则沉淀：
+   - 取值分三支：① 图上可见 → 显示网格值（与图面颜色一致）；② **有值但被阈值/色标范围挡住 → 仍然给出数值 + 原因**（如「-5.0 dBZ，低于显示阈值 5 dBZ（图上透明）」）；③ 真无数据（超出网格范围/库缺测）→ 输入查询提示“无数据”，点击地图静默
+   - 分支 ② 的数值优先取 `sampleRstmValue`（极坐标原始径向，无网格量化），退回 `sampleGridValue`（不传阈值/范围）
+   - 实测该点：极坐标原始值 **-5.00 dBZ**（方位 12.01°、44.8km、gate 179）；0.01° 网格值为 4.00 dBZ（1.1km 网格量化 + 邻域回找所致）→ 提示里用原始值更符合直觉
+   - 若希望弱回波也上图：改 `src/config/products.ts` 里 dBZ 首个非透明档（现为 5），同步 `public/data/products.json`；注意降太低会把噪声/地物杂波一起上色
+   - 验证方式：`vue-tsc` 通过；三分支断言（目标点走②并给出 -5.0、强回波走①、范围外走③）全部通过（临时脚本已删除）
+
+【2026-10-21 本轮改动（取值补上「地面距离 → 沿波束斜距」换算）】
+
+1. 修改文件：`src/parse/cinradVolume.ts`、`CLAUDE.md`
+
+2. 修改目的：用户确认取值口径（4 步），其中第 3 步「按径向实际仰角把距离换算成沿波束距离再选库」此前缺失 —— 原先直接用地面大圆距离当斜距。
+
+3. 关键规则沉淀：
+   - 取值 4 步：① 经纬度 → 方位角 + 地面距离（Haversine）；② 方位角 → 该字段**有数据**的最近径向（保留原始 0.98°/0.99° 分辨率，长短圈分别找）；③ 地面距离按**径向实际仰角**换算成沿波束斜距，再选距离库；④ `(code − Offset) / Scale`，`code ≤ 4` 缺测
+   - 换算公式（4/3 地球等效半径）：`h = sqrt(s² + kRe² + 2·s·kRe·sinθ) − kRe`，`r = kRe·asin(s·cosθ/(kRe+h))`；反解 `groundToSlantRange` 用二分（地面距离随斜距单调）
+   - 影响量级：0.5° 460km 差 0.69km（3 库）；6° 230km 差 2.0km（8 库）；19.5° 123km 差 **8.2km（33 库）**，19.5° 100km 的 gate 由 399 → 425
+   - 反向也要换算：`volumeToGrid` 计算覆盖范围时用 `slantToGroundRange`（19.5° 层 123km 斜距对应地面半径约 115km）
+   - ★ UI 的“点击地图/输入经纬度”走的是 `sampleGridValue`（栅格化后的 0.01° 网格最近邻 + 邻域回找），不是 `sampleRstmValue`（纯极坐标取样）；实际链路还多一次约 1.1km 的网格量化 ★
+   - 验证方式：`vue-tsc` 通过；换算往返一致（<1m）、各仰角影响量级、19.5° 层地面覆盖 < 123km 等断言全部通过（临时脚本已删除）
+
+【2026-10-21 本轮改动（移除地图角落版权标识）】
+
+1. 修改文件：`src/render/mapManager.ts`、`src/styles.css`、`CLAUDE.md`
+
+2. 修改目的：去掉地图左下角出现的 "@QuickEarth" 小字标识（平台自带色标图例，不需要地图内版权条）。
+
+3. 关键规则沉淀：
+   - QE 的 `LMap` 构造器本身已把 `attributionControl` 置为 false（源码：`attributionControl` 非 true 时强制设为 false），本项目的 `createRadarMap` 又显式声明了一次，防 QE 版本变化
+   - 底图/图层是异步初始化的，仍可能再挂上 attribution 条 → `createRadarMap` 里 `stripAttribution(container)` 立即清一次 + 800ms 后再清一次（`map.getContainer()`，注意入参是 `string | HTMLElement`，不能用原始参数）
+   - CSS 兜底：`.leaflet-control-attribution { display: none !important }`
+   - 备注：切到「行政」底图时天地图的 attribution 也会被一并隐藏；如有版权合规要求，可改成只隐藏 QE 标识、保留天地图来源
+   - 验证方式：`vue-tsc` 通过；若刷新后仍可见，需要用户右键「检查」提供该元素 outerHTML（QE 包内不存在 "QuickEarth" 文本，说明它不是 QE 的 DOM 元素）
+
 【2026-10-21 本轮改动（图例内经纬度查询）】
 
 1. 修改文件：`src/components/Legend.vue`、`src/components/RadarScreen.vue`、`src/styles.css`、`CLAUDE.md`

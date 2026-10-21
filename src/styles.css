@@ -343,7 +343,8 @@ button {
 }
 
 .legend-query-input {
-  flex: 1;
+  /* 经度、纬度两个框等分剩余宽度（图例总宽 220px，按钮约 44px） */
+  flex: 1 1 0;
   min-width: 0;
   height: 20px;
   padding: 0 5px;
@@ -364,6 +365,8 @@ button {
 }
 
 .legend-query-btn {
+  /* 不参与伸缩，避免两个输入框把按钮挤扁 */
+  flex: 0 0 auto;
   height: 20px;
   padding: 0 8px;
   border: 1px solid #2a3646;
@@ -508,6 +511,16 @@ button {
 .leaflet-bar a {
   background: #1a2330;
   color: #d8e2ee;
+}
+
+/*
+ * 地图角落的版权/标识条：平台自带色标图例（Legend.vue），不需要它。
+ * QE 的 LMap 构造器默认已把 attributionControl 置 false，
+ * 这里再兜一层（底图/图层异步初始化后仍可能挂上）。
+ * 对应的 DOM 清理见 mapManager.stripAttribution。
+ */
+.leaflet-control-attribution {
+  display: none !important;
 }
 
 /* ───────────── 点击取值弹窗（深色主题） ───────────── */

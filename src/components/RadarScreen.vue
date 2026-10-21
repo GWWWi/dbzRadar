@@ -40,7 +40,7 @@ import {
   parseUploadedFile,
   RadarFileMissingError
 } from '../api/radarApi';
-import { volumeToGrid, MOMENT_FIELD } from '../parse/cinradVolume';
+import { volumeToGrid, sampleRstmValue, MOMENT_FIELD } from '../parse/cinradVolume';
 import { ElMessage } from 'element-plus';
 import Legend from './Legend.vue';
 import * as L from 'leaflet';
@@ -303,45 +303,93 @@ async function refresh(): Promise<void> {
 }
 
 /**
+ * 该点的**原始值**（不判显示阈值、不判色标范围）。
+ *
+ * 优先走极坐标原始径向（`sampleRstmValue`，无网格量化，精度最高）；
+ * 非 RSTM 数据或该层取不到时退回栅格原始值（`sampleGridValue` 不传阈值/范围）。
+ *
+ * 用途：用户查到一个“图上透明”的位置时，仍能告出真实数值与原因，
+ * 而不是笼统地报“无数据”（例如 4.4 km 处的弱回波 -5 dBZ 被 5 dBZ 阈值挡住）。
+ */
+function rawValueAt(lat: number, lon: number, productId: string): number | null {
+  const field = fieldForProduct(productId);
+
+  if (currentVolume && layerElevation >= 0) {
+    const s = sampleRstmValue(currentVolume, lat, lon, layerElevation);
+    if (s) {
+      const v = (s as unknown as Record<string, number | null>)[field];
+      if (typeof v === 'number' && Number.isFinite(v)) return v;
+    }
+  }
+
+  // 退回栅格原始值：不传 minVisible / range → 只判网格范围与缺测
+  return layerGrid ? sampleGridValue(layerGrid, lat, lon) : null;
+}
+
+/**
  * 在指定经纬度取本屏数值并弹窗。
  *
- * 地图点击与图例的「经纬度查询」共用这一套口径，保证两种入口结果一致：
- *   - 阈值必须与渲染一致（低于首个可见档的格点在图上透明，取值也应为空）；
- *   - 色标范围同理（范围外透明 → 取值返回 null）。
+ * 地图点击与图例的「经纬度查询」共用这一套入口，结果一致。
+ * 三种情况分别处理：
+ *   ① 图上可见 → 直接显示网格值（与图面颜色一致）；
+ *   ② 有值但图上透明（低于显示阈值 / 超出色标范围）→ **仍然给出数值**，
+ *      并注明原因，避免“明明有回波却查不到”；
+ *   ③ 真无数据（超出网格范围或该库缺测）→ 关弹窗，输入查询时提示。
  *
  * @param lat    纬度
  * @param lon    经度
- * @param notify 无数据时是否提示；点击地图静默关闭弹窗，输入查询需要反馈
+ * @param notify 需要提示时传 true（输入查询）；点击地图保持静默
  */
 function showValueAt(lat: number, lon: number, notify = false): void {
   if (!map) return;
 
   const product = getProductByIdSafe(screen.value?.productId ?? 'dBZ');
-  const v = layerGrid
-    ? sampleGridValue(
-        layerGrid,
-        lat,
-        lon,
-        firstVisibleThreshold(product),
-        screen.value?.valueRange ?? null
-      )
-    : null;
+  const range = screen.value?.valueRange ?? null;
+  const threshold = firstVisibleThreshold(product);
 
-  if (v === null) {
+  // ① 按显示口径取值：图上有的颜色一定能取到值
+  const visible = layerGrid ? sampleGridValue(layerGrid, lat, lon, threshold, range) : null;
+
+  if (visible !== null) {
+    L.popup({ closeButton: false, className: 'value-popup' })
+      .setLatLng([lat, lon])
+      .setContent(
+        `${visible.toFixed(1)} ${product.unit}<br>` +
+        `${lat.toFixed(3)}°N, ${lon.toFixed(3)}°E`
+      )
+      .openOn(map as unknown as L.Map);
+    return;
+  }
+
+  // ② / ③ 图上透明：区分“有值被过滤”和“真没有数据”
+  const raw = rawValueAt(lat, lon, product.id);
+
+  if (raw === null) {
     map.closePopup();
     if (notify) {
-      ElMessage.warning('该位置无数据（超出数据范围、无回波或已被色标范围裁剪）');
+      ElMessage.warning('该位置无数据（超出数据范围或无回波）');
     }
     return;
   }
 
+  const unit = product.unit ? ' ' + product.unit : '';
+  const reason =
+    Number.isFinite(threshold) && raw < threshold
+      ? `低于显示阈值 ${threshold}${unit}`
+      : '超出当前色标范围';
+
   L.popup({ closeButton: false, className: 'value-popup' })
     .setLatLng([lat, lon])
     .setContent(
-      `${v.toFixed(1)} ${product.unit}<br>` +
+      `${raw.toFixed(1)} ${product.unit}<br>` +
+      `<span style="color:#ffb454">${reason}（图上透明）</span><br>` +
       `${lat.toFixed(3)}°N, ${lon.toFixed(3)}°E`
     )
     .openOn(map as unknown as L.Map);
+
+  if (notify) {
+    ElMessage.info(`该位置 ${raw.toFixed(1)}${unit}：${reason}，图上不显示`);
+  }
 }
 
 /** 地图点击取值（静默：无数据时只关弹窗，不打扰用户） */

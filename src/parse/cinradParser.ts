@@ -136,7 +136,7 @@ export function buildSynthetic(
   const stationId = opts.stationId || DEFAULT_STATION_ID;
   const stationName = opts.stationName || stationId;
   const product = opts.product;
-  const productId = product ? product.id : 'Z';
+  const productId = product ? product.id : 'dBZ';
   const units = product ? product.unit : 'dBZ';
   const undef = UNDEF;
 

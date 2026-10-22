@@ -22,12 +22,6 @@ import {
 /** 要展示的产品代码 + 所属屏 id（范围选择是每屏独立状态） */
 const props = defineProps<{ productId: string; screenId: number }>();
 
-/**
- * 经纬度查询事件：把解析后的坐标交给所属屏去取值并弹窗。
- * 取值逻辑（产品、色标范围、阈值）属于 RadarScreen，图例只负责收集输入。
- */
-const emit = defineEmits<{ query: [lat: number, lon: number] }>();
-
 /** 该产品元信息 */
 const product = computed(() => getProductByIdSafe(props.productId));
 
@@ -35,6 +29,15 @@ const product = computed(() => getProductByIdSafe(props.productId));
 const visibleStops = computed(() =>
   product.value.colorStops.filter((s) => s.stop[3] > 0)
 );
+
+/**
+ * 图例标题：只显示产品名。
+ *
+ * 产品名里已括注产品代码（如「反射率（dBZ）」「径向速度（V）」），
+ * 再拼一次单位会出现「反射率（dBZ）（dBZ）」这类重复；
+ * 单位信息在刻度与范围文本（如「20 ~ 55 dBZ」）里已有体现，标题不再重复。
+ */
+const title = computed(() => product.value.name);
 
 /** 有效档位数值序列：滑块索引与色标色块一一对应 */
 const stopValues = computed(() => visibleStops.value.map((s) => s.value));
@@ -154,68 +157,6 @@ function resetRange(): void {
   setScreenRange(props.screenId, null);
 }
 
-/* ─────────────── 经纬度查询 ─────────────── */
-
-/** 经度输入框内容 */
-const lonInput = ref('');
-
-/** 纬度输入框内容 */
-const latInput = ref('');
-
-/** 校验错误提示（空串表示无错误） */
-const coordError = ref('');
-
-/**
- * 解析输入并提交查询（经度、纬度分开填写）。
- *
- * 容错：如果把「118.9269,33.6378」整串粘进经度框、纬度框为空，
- * 会按逗号/空格拆成两个值，省去手动分开。
- *
- * 校验只拦截明显非法输入，范围与地图点击取值无关。
- */
-function onQuery(): void {
-  let lonText = lonInput.value.trim();
-  let latText = latInput.value.trim();
-
-  // 整串坐标粘到单框时的自动拆分
-  if (!latText && /[,，\s]/.test(lonText)) {
-    const parts = lonText.split(/[,，\s]+/).filter(Boolean);
-    if (parts.length >= 2) {
-      lonText = parts[0];
-      latText = parts[1];
-      lonInput.value = lonText;
-      latInput.value = latText;
-    }
-  }
-
-  if (!lonText || !latText) {
-    coordError.value = '请填写经度和纬度';
-    return;
-  }
-
-  const lon = Number(lonText);
-  const lat = Number(latText);
-  if (!Number.isFinite(lon)) {
-    coordError.value = '经度必须是数字';
-    return;
-  }
-  if (!Number.isFinite(lat)) {
-    coordError.value = '纬度必须是数字';
-    return;
-  }
-  if (lon < -180 || lon > 180) {
-    coordError.value = '经度范围 -180 ~ 180';
-    return;
-  }
-  if (lat < -90 || lat > 90) {
-    coordError.value = '纬度范围 -90 ~ 90';
-    return;
-  }
-
-  coordError.value = '';
-  emit('query', lat, lon);
-}
-
 /* ─────────────── 拖拽逻辑 ─────────────── */
 
 const rootRef = ref<HTMLDivElement | null>(null);
@@ -319,7 +260,7 @@ onBeforeUnmount(() => {
     @pointerup="onPointerUp"
     @pointercancel="onPointerUp"
   >
-    <div class="legend-unit">{{ product.name }}（{{ product.unit || '-' }}）</div>
+    <div class="legend-unit">{{ title }}</div>
 
     <!-- 色标条 + 叠加的范围滑块：滑块轨道横穿色标条，手柄压在上层 -->
     <div class="legend-bar-wrap">
@@ -382,32 +323,5 @@ onBeforeUnmount(() => {
       </button>
     </div>
 
-    <!--
-      经纬度查询：经度、纬度分开填 → 在该位置弹窗显示本屏数值。
-      ★ 容器必须 @pointerdown.stop ★ 否则按下输入框会触发浮层拖拽
-        并 setPointerCapture，输入框拿不到焦点（与重置按钮同一坑）。
-    -->
-    <div class="legend-query" @pointerdown.stop>
-      <input
-        v-model="lonInput"
-        class="legend-query-input"
-        type="text"
-        inputmode="decimal"
-        placeholder="经度"
-        title="经度（-180 ~ 180），如 118.9269"
-        @keydown.enter="onQuery"
-      />
-      <input
-        v-model="latInput"
-        class="legend-query-input"
-        type="text"
-        inputmode="decimal"
-        placeholder="纬度"
-        title="纬度（-90 ~ 90），如 33.6378"
-        @keydown.enter="onQuery"
-      />
-      <button class="legend-query-btn" @click.stop="onQuery">查询</button>
-    </div>
-    <div v-if="coordError" class="legend-query-error">{{ coordError }}</div>
   </div>
 </template>

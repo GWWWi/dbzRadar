@@ -40,7 +40,12 @@ import {
   parseUploadedFile,
   RadarFileMissingError
 } from '../api/radarApi';
-import { volumeToGrid, sampleRstmValue, MOMENT_FIELD } from '../parse/cinradVolume';
+import {
+  volumeToGrid,
+  sampleRstmValue,
+  sampleRstmNeighborhood,
+  MOMENT_FIELD
+} from '../parse/cinradVolume';
 import { ElMessage } from 'element-plus';
 import Legend from './Legend.vue';
 import * as L from 'leaflet';
@@ -326,69 +331,112 @@ function rawValueAt(lat: number, lon: number, productId: string): number | null 
   return layerGrid ? sampleGridValue(layerGrid, lat, lon) : null;
 }
 
+/* ─────────────── 坐标查询（独立面板，不与色标图例混在一起） ─────────────── */
+
+/** 坐标查询结果（面板显示用） */
+interface QueryResult {
+  lat: number;
+  lon: number;
+  /** 中心库的原始值（最近邻，与图上颜色同口径） */
+  center: number | null;
+  /** 3×3 九点均值；无 RSTM 数据或有效库不足时为 null */
+  mean: number | null;
+  /** 参与平均的有效库数 */
+  validCount: number;
+  /** 邻域内被检查的库数（边界处可能 < 9） */
+  totalCount: number;
+  /** 单位（dBZ / m/s / dB …） */
+  unit: string;
+  /** 说明：低于阈值 / 超出范围 / 无数据 */
+  note: string;
+}
+
+/** 经度输入 */
+const lonInput = ref('');
+/** 纬度输入 */
+const latInput = ref('');
+/** 输入校验错误 */
+const queryError = ref('');
+/** 最近一次查询结果（面板显示） */
+const queryResult = ref<QueryResult | null>(null);
+
 /**
- * 在指定经纬度取本屏数值并弹窗。
+ * 在指定经纬度取本屏数值：面板显示 + 地图弹窗。
  *
- * 地图点击与图例的「经纬度查询」共用这一套入口，结果一致。
- * 三种情况分别处理：
- *   ① 图上可见 → 直接显示网格值（与图面颜色一致）；
- *   ② 有值但图上透明（低于显示阈值 / 超出色标范围）→ **仍然给出数值**，
- *      并注明原因，避免“明明有回波却查不到”；
- *   ③ 真无数据（超出网格范围或该库缺测）→ 关弹窗，输入查询时提示。
+ * 地图点击与坐标查询共用这一套入口，结果一致。
+ * 同时给出两种数值：
+ *   - **原始值**：中心库的最近邻值（保峰值，与图面颜色同口径）；
+ *   - **九点均值**：中心 + 周围 8 个库的平均（抑噪，但会压低峰值）。
+ * 图上透明（低于阈值 / 超出色标范围）时仍然给出数值并注明原因。
  *
  * @param lat    纬度
  * @param lon    经度
- * @param notify 需要提示时传 true（输入查询）；点击地图保持静默
+ * @param notify 需要提示时传 true（坐标查询）；点击地图保持静默
  */
 function showValueAt(lat: number, lon: number, notify = false): void {
   if (!map) return;
 
   const product = getProductByIdSafe(screen.value?.productId ?? 'dBZ');
+  const field = fieldForProduct(product.id);
   const range = screen.value?.valueRange ?? null;
   const threshold = firstVisibleThreshold(product);
 
-  // ① 按显示口径取值：图上有的颜色一定能取到值
-  const visible = layerGrid ? sampleGridValue(layerGrid, lat, lon, threshold, range) : null;
+  // —— 取值：九点邻域（RSTM 才有） / 退回原始值 ——
+  const neigh =
+    currentVolume && layerElevation >= 0
+      ? sampleRstmNeighborhood(currentVolume, lat, lon, layerElevation, field)
+      : null;
 
-  if (visible !== null) {
-    L.popup({ closeButton: false, className: 'value-popup' })
-      .setLatLng([lat, lon])
-      .setContent(
-        `${visible.toFixed(1)} ${product.unit}<br>` +
-        `${lat.toFixed(3)}°N, ${lon.toFixed(3)}°E`
-      )
-      .openOn(map as unknown as L.Map);
-    return;
-  }
-
-  // ② / ③ 图上透明：区分“有值被过滤”和“真没有数据”
-  const raw = rawValueAt(lat, lon, product.id);
-
-  if (raw === null) {
-    map.closePopup();
-    if (notify) {
-      ElMessage.warning('该位置无数据（超出数据范围或无回波）');
-    }
-    return;
-  }
+  const center = neigh ? neigh.center : rawValueAt(lat, lon, product.id);
+  // 图上可见性用网格口径判断（与渲染一致）
+  const visibleValue = layerGrid ? sampleGridValue(layerGrid, lat, lon, threshold, range) : null;
 
   const unit = product.unit ? ' ' + product.unit : '';
-  const reason =
-    Number.isFinite(threshold) && raw < threshold
-      ? `低于显示阈值 ${threshold}${unit}`
-      : '超出当前色标范围';
+  let note = '';
+  if (center === null && !neigh?.mean) {
+    note = '无数据（超出数据范围或缺测）';
+  } else if (visibleValue === null && center !== null) {
+    note =
+      Number.isFinite(threshold) && center < threshold
+        ? `低于显示阈值 ${threshold}${unit}（图上透明）`
+        : '超出当前色标范围（图上透明）';
+  }
+
+  queryResult.value = {
+    lat,
+    lon,
+    center,
+    mean: neigh ? neigh.mean : null,
+    validCount: neigh ? neigh.validCount : 0,
+    totalCount: neigh ? neigh.totalCount : 0,
+    unit: product.unit,
+    note
+  };
+
+  // —— 地图弹窗：展示可见值（优先）或原始值 ——
+  const shown = visibleValue ?? center;
+  if (shown === null) {
+    map.closePopup();
+    if (notify) ElMessage.warning('该位置无数据（超出数据范围或无回波）');
+    return;
+  }
+
+  const lines = [`${shown.toFixed(1)} ${product.unit}`];
+  if (neigh && neigh.mean !== null) {
+    lines.push(
+      `9点均值 ${neigh.mean.toFixed(1)} ${product.unit}（${neigh.validCount}/${neigh.totalCount}）`
+    );
+  }
+  if (note) lines.push(`<span style="color:#ffb454">${note}</span>`);
+  lines.push(`${lat.toFixed(3)}°N, ${lon.toFixed(3)}°E`);
 
   L.popup({ closeButton: false, className: 'value-popup' })
     .setLatLng([lat, lon])
-    .setContent(
-      `${raw.toFixed(1)} ${product.unit}<br>` +
-      `<span style="color:#ffb454">${reason}（图上透明）</span><br>` +
-      `${lat.toFixed(3)}°N, ${lon.toFixed(3)}°E`
-    )
+    .setContent(lines.join('<br>'))
     .openOn(map as unknown as L.Map);
 
-  if (notify) {
-    ElMessage.info(`该位置 ${raw.toFixed(1)}${unit}：${reason}，图上不显示`);
+  if (notify && note) {
+    ElMessage.info(`该位置 ${shown.toFixed(1)}${unit}：${note}`);
   }
 }
 
@@ -397,8 +445,50 @@ function onMapClick(e: L.LeafletMouseEvent): void {
   showValueAt(e.latlng.lat, e.latlng.lng);
 }
 
-/** 图例的经纬度查询（无数据时给出提示，避免“点了没反应”） */
-function onQueryCoord(lat: number, lon: number): void {
+/**
+ * 坐标查询：校验输入 → 取值。
+ *
+ * 容错：把「118.9269,33.6378」整串粘进经度框、纬度框为空时自动拆分。
+ */
+function onQueryClick(): void {
+  let lonText = lonInput.value.trim();
+  let latText = latInput.value.trim();
+
+  if (!latText && /[,，\s]/.test(lonText)) {
+    const parts = lonText.split(/[,，\s]+/).filter(Boolean);
+    if (parts.length >= 2) {
+      lonText = parts[0];
+      latText = parts[1];
+      lonInput.value = lonText;
+      latInput.value = latText;
+    }
+  }
+
+  if (!lonText || !latText) {
+    queryError.value = '请填写经度和纬度';
+    return;
+  }
+
+  const lon = Number(lonText);
+  const lat = Number(latText);
+  if (!Number.isFinite(lon)) {
+    queryError.value = '经度必须是数字';
+    return;
+  }
+  if (!Number.isFinite(lat)) {
+    queryError.value = '纬度必须是数字';
+    return;
+  }
+  if (lon < -180 || lon > 180) {
+    queryError.value = '经度范围 -180 ~ 180';
+    return;
+  }
+  if (lat < -90 || lat > 90) {
+    queryError.value = '纬度范围 -90 ~ 90';
+    return;
+  }
+
+  queryError.value = '';
   showValueAt(lat, lon, true);
 }
 
@@ -582,15 +672,64 @@ watch(
         <input type="file" accept=".bin,.m4" hidden @change="onUploadChange" />
       </label>
     </div>
-    <!-- 地图容器 + 色标浮层（固定在地图右下角，展示本屏产品色标） -->
+    <!-- 地图容器 + 色标浮层（右下角）+ 坐标查询浮层（左下角，两者互不干扰） -->
     <div class="map-area">
       <div :id="mapElId" ref="elRef" class="map"></div>
-      <!-- @query：图例输入经纬度后，用本屏的阈值/色标范围取值并弹窗 -->
-      <Legend
-        :screen-id="screenId"
-        :product-id="screen?.productId ?? 'dBZ'"
-        @query="onQueryCoord"
-      />
+
+      <!-- 色标图例：只负责产品色标与数值范围 -->
+      <Legend :screen-id="screenId" :product-id="screen?.productId ?? 'dBZ'" />
+
+      <!--
+        坐标查询：独立于色标图例。
+        同时给出“原始值”（中心库最近邻）与“9 点均值”（3×3 邻域平均），
+        前者保峰值、后者抑噪，便于对照。
+      -->
+      <div class="coord-query" @pointerdown.stop @wheel.stop>
+        <div class="coord-query-title">坐标查询</div>
+        <div class="coord-query-row">
+          <input
+            v-model="lonInput"
+            class="coord-query-input"
+            type="text"
+            inputmode="decimal"
+            placeholder="经度"
+            title="经度（-180 ~ 180），如 118.9269"
+            @keydown.enter="onQueryClick"
+          />
+          <input
+            v-model="latInput"
+            class="coord-query-input"
+            type="text"
+            inputmode="decimal"
+            placeholder="纬度"
+            title="纬度（-90 ~ 90），如 33.6378"
+            @keydown.enter="onQueryClick"
+          />
+          <button class="coord-query-btn" @click="onQueryClick">查询</button>
+        </div>
+
+        <div v-if="queryError" class="coord-query-err">{{ queryError }}</div>
+
+        <div v-if="queryResult" class="coord-query-result">
+          <div>
+            原始：
+            <b>{{ queryResult.center === null ? '无数据' : queryResult.center.toFixed(1) }}</b>
+            {{ queryResult.unit }}
+          </div>
+          <div>
+            9点均值：
+            <b>{{ queryResult.mean === null ? '—' : queryResult.mean.toFixed(1) }}</b>
+            {{ queryResult.mean === null ? '' : queryResult.unit }}
+            <span class="coord-query-count" v-if="queryResult.totalCount">
+              （{{ queryResult.validCount }}/{{ queryResult.totalCount }} 有效）
+            </span>
+          </div>
+          <div v-if="queryResult.note" class="coord-query-note">{{ queryResult.note }}</div>
+          <div class="coord-query-coord">
+            {{ queryResult.lat.toFixed(4) }}°N, {{ queryResult.lon.toFixed(4) }}°E
+          </div>
+        </div>
+      </div>
     </div>
   </div>
 </template>

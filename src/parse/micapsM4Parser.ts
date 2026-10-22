@@ -141,7 +141,7 @@ export function parseMicapsM4(
     stationName: description.slice(0, 30),
     lat: startLat + latDelta * (ySize - 1) / 2, // 网格中心纬度（参考定位用）
     lon: startLon + lonDelta * (xSize - 1) / 2,
-    product: product ? product.id : 'Z',
+    product: product ? product.id : 'dBZ',
     time,
     units: product ? product.unit : 'dBZ',
     undef: UNDEF,

@@ -58,7 +58,7 @@ onMounted(async () => {
     }
     // 获取当前产品最新时间（假数据接口）→ 吸附到时间轴最近时次，
     // 赋值到时间轴与时间选择控件（setScreenTime 经 jumpValue watch 同步控件）
-    const latest = await fetchLatestTime(activeScreen.value?.productId ?? 'Z');
+    const latest = await fetchLatestTime(activeScreen.value?.productId ?? 'dBZ');
     const snapped = snapNearestTime(timelineTimes.value, latest);
     if (snapped) setScreenTime(appState.activeScreenId, snapped);
   } catch (e) {

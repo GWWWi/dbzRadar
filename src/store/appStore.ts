@@ -85,7 +85,9 @@ export interface AppState {
 function createScreens(n: number): ScreenState[] {
   return Array.from({ length: n }, (_, i) => ({
     id: i,
-    productId: 'Z', // 默认产品 = 基本反射率
+    // 默认产品 = 反射率；必须与 config/products.ts 的 id 一致（旧代码用 'Z'，
+    // 产品列表改成 dBZ/dBT/... 之后会对不上，导致屏头与概览显示原始 id）
+    productId: 'dBZ',
     time: '',
     status: '',
     smooth: false,
@@ -135,7 +137,7 @@ export function setLayout(layout: LayoutType): void {
   const cur = appState.screens;
   if (cur.length < layout) {
     const base = cur[cur.length - 1] || {
-      productId: 'Z',
+      productId: 'dBZ',
       time: '',
       status: '',
       smooth: false,
@@ -366,7 +368,7 @@ export function getProductByIdSafe(id: string): RadarProduct {
  */
 const EMPTY_SCREEN: ScreenState = {
   id: 0,
-  productId: 'Z',
+  productId: 'dBZ',
   time: '',
   status: '',
   smooth: false,

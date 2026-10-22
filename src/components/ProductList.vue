@@ -37,7 +37,7 @@ function fmt(t: string): string {
         <button
           class="product-item"
           :class="{ 'item-active': p.id === activeProductId }"
-          :title="`${p.name}（${p.unit}）`"
+          :title="p.name"
           @click="
             setScreenProduct(appState.activeScreenId, p.id);
             setActiveScreen(appState.activeScreenId);
@@ -47,7 +47,10 @@ function fmt(t: string): string {
           <span class="product-type" :class="{ 'type-fcst': p.type === 'fcst' }">
             {{ p.type === 'fcst' ? '预报' : '实况' }}
           </span>
-          <span class="product-unit">{{ p.unit }}</span>
+          <!-- 名称里已括注单位时（如「反射率（dBZ）」）不再重复显示单位 -->
+          <span class="product-unit" v-if="!p.name.includes(`（${p.unit}）`)">
+            {{ p.unit }}
+          </span>
         </button>
       </li>
     </ul>

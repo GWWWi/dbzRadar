@@ -334,16 +334,34 @@ button {
   white-space: nowrap;
 }
 
-/* ───────────── 图例内的经纬度查询 ───────────── */
-/* 图例总宽 220px：输入框 flex 占满，按钮固定宽度 */
-.legend-query {
-  display: flex;
-  gap: 4px;
-  margin-top: 6px;
+/* ───────────── 坐标查询浮层（地图左下角，与右下的色标图例分离） ───────────── */
+.coord-query {
+  position: absolute;
+  left: 8px;
+  bottom: 8px;
+  z-index: 1200;
+  width: 210px;
+  padding: 6px 8px;
+  border: 1px solid #2a3646;
+  border-radius: 4px;
+  background: rgba(13, 20, 32, 0.9);
+  color: #d8e2ee;
+  font-size: 10px;
+  line-height: 1.5;
 }
 
-.legend-query-input {
-  /* 经度、纬度两个框等分剩余宽度（图例总宽 220px，按钮约 44px） */
+.coord-query-title {
+  margin-bottom: 4px;
+  color: #8fa3ba;
+}
+
+.coord-query-row {
+  display: flex;
+  gap: 4px;
+}
+
+.coord-query-input {
+  /* 经度、纬度两个框等分剩余宽度 */
   flex: 1 1 0;
   min-width: 0;
   height: 20px;
@@ -356,15 +374,15 @@ button {
   outline: none;
 }
 
-.legend-query-input::placeholder {
+.coord-query-input::placeholder {
   color: #5f7288;
 }
 
-.legend-query-input:focus {
+.coord-query-input:focus {
   border-color: #3a7bd5;
 }
 
-.legend-query-btn {
+.coord-query-btn {
   /* 不参与伸缩，避免两个输入框把按钮挤扁 */
   flex: 0 0 auto;
   height: 20px;
@@ -378,15 +396,39 @@ button {
   white-space: nowrap;
 }
 
-.legend-query-btn:hover {
+.coord-query-btn:hover {
   border-color: #3a4c66;
 }
 
-.legend-query-error {
+.coord-query-err {
   margin-top: 3px;
-  font-size: 10px;
-  line-height: 1.3;
   color: #ff7875;
+}
+
+.coord-query-result {
+  margin-top: 5px;
+  padding-top: 5px;
+  border-top: 1px solid #22303f;
+}
+
+/* 数值高亮，便于快速对照“原始值 / 9 点均值” */
+.coord-query-result b {
+  color: #7fd0ff;
+  font-weight: 600;
+}
+
+.coord-query-count {
+  color: #6f8399;
+}
+
+.coord-query-note {
+  margin-top: 2px;
+  color: #ffb454;
+}
+
+.coord-query-coord {
+  margin-top: 2px;
+  color: #6f8399;
 }
 
 .legend-reset {

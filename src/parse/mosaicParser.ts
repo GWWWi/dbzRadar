@@ -99,7 +99,7 @@ export function parseRADAMOSAIC(
 ): RadarGrid {
   const dv = new DataView(buffer);
   const product = opts.product;
-  const productId = product ? product.id : 'Z';
+  const productId = product ? product.id : 'dBZ';
   const units = product ? product.unit : 'dBZ';
 
   // —— 1) 读取头部数值字段（全部小端） ——

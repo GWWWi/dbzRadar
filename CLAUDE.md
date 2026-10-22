@@ -20,6 +20,36 @@
 
 # 迭代变更日志（按时间倒序）
 
+【2026-10-21 本轮改动（修正默认产品 id 与图例标题重复）】
+
+1. 修改文件：`src/store/appStore.ts`、`src/App.vue`、`src/parse/mosaicParser.ts`、`src/parse/micapsM4Parser.ts`、`src/parse/cinradParser.ts`、`src/components/Legend.vue`、`src/components/ProductList.vue`、`CLAUDE.md`
+
+2. 修改目的：进入页面时默认产品显示不对 —— 屏头/各屏状态显示原始的 `Z`，图例标题出现「反射率（dBZ）（dBZ）」。
+
+3. 根因与修复：
+   - 产品目录改成 dBZ/dBT/V/W/ZDR/CC/KDP/SNRH 后，**默认 `productId` 仍是旧的 `'Z'`**：产品列表里找不到该 id → 屏头与各屏状态回退显示原始 id「Z」，产品项高亮也匹配不上
+   - 三处默认值统一改为 `'dBZ'`：`createScreens()`、`setLayout()` 的 base 兜底、`EMPTY_SCREEN`；`App.vue` 的 `?? 'Z'` 与三个解析器的 product 兜底同步改
+   - 图例标题改为**只显示产品名**（名称里已括注产品代码），单位不再重复拼接（「反射率（dBZ）」而不是「反射率（dBZ）（dBZ）」）
+   - 产品列表：tooltip 改用 `p.name`；名称已含单位时**隐藏右侧单位列**（避免「反射率（dBZ） … dBZ」）
+   - ★ 规则：产品 id 是 `config/products.ts` 与 `public/data/products.json` 的契约，默认值/兜底值必须用同一套 id，不能留旧代码 ★
+   - 验证方式：`vue-tsc` 通过；默认 productId 能在目录中命中、产品名均括注自身 id、无重复括号等断言全部通过（临时脚本已删除）
+
+【2026-10-21 本轮改动（坐标查询独立成面板 + 增加九点均值）】
+
+1. 修改文件：`src/parse/cinradVolume.ts`、`src/components/RadarScreen.vue`、`src/components/Legend.vue`、`src/styles.css`、`AGENTS.md`、`CLAUDE.md`
+
+2. 修改目的：① 把经纬度查询从色标图例里拿出来，做成地图左下角的独立面板；② 面板同时给出「原始值（最近邻）」与「9 点均值（3×3 邻域）」，便于对照。
+
+3. 关键规则沉淀：
+   - 新增 `sampleRstmNeighborhood(volume, lat, lon, layerIdx, field, radius=1)` → `{ center, mean, validCount, totalCount }`
+   - ★ 邻域必须按“**有该字段数据的径向**”向外扩展，不能用数组下标 ±1 ★：层里混着长短圈和“只有部分字段”的残缺径向（实测约 **18%** 的径向没有 dBZ 矩），下标 ±1 会连续踩空，9 点只剩 3 个有效、均值直接失效
+   - 均值口径：只统计有效库；有效数 < **5** 时不给均值（避免 1~2 个样本不可靠）；方位索引环绕 0°/360°
+   - 实测该点（33.6378, 118.9269，0.5° 层 dBZ）：center **-5.00**、mean **-0.89**（9/9 有效）；强回波点 48.5 → 邻域 40.7（印证“平滑压低峰值”）；速度 V -7.00 → -8.11
+   - **速度场是标量平均**（未做 u/v 分解），跨零速度线会得到伪小值，UI 上按“参考值”看待
+   - UI：`.coord-query` 固定地图左下角（z-index 1200），色标图例仍在右下角；面板内就地显示原始值 / 9 点均值（含 x/9 有效）与说明（低于阈值、超出范围、无数据）
+   - `Legend.vue` 只保留色标与范围手柄，不再有查询输入（`emit('query')` 已移除）
+   - 验证方式：`vue-tsc` 通过、0 诊断；九点邻域断言（9/9 有效、均值≠中心值、峰值不被抬高、范围外全 null）全部通过（临时脚本已删除）
+
 【2026-10-21 本轮改动（经纬度分开输入）】
 
 1. 修改文件：`src/components/Legend.vue`、`src/styles.css`、`AGENTS.md`、`CLAUDE.md`

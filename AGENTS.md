@@ -17,14 +17,18 @@
 | 地图 | QuickEarth 3.2.2（`@quickearth/core` + `@quickearth/leaflet`）+ Leaflet 1.9.4 |
 | QE 地图类 | `LMap extends Leaflet L.Map`——Leaflet 的 on/popup/layer API 全部可用 |
 | QE 初始化 | `src/main.ts`：先设 `consts.wasmPath='/libs/wasm'`、`workerPath='/libs/workers'`，再 `qeInit(undefined, true)` 免费二维模式 |
-| dev | `npm run dev`（scripts/dev.cjs，端口 5179，strictPort，`host: true` 监听所有网卡 → 可经本机 IP 局域网访问）；`/radar-data` 代理到 `http://localhost:9099/data/radarData` |
-| build | `npm run build`（scripts/build.cjs） |
+| dev | `npm run dev`（scripts/dev.cjs，端口 5179，strictPort，`host: true` 监听所有网卡 → 可经本机 IP 局域网访问），mode=development → 读 `.env.development`；`/radar-data` 代理到 `http://localhost:9099/data/radarData` |
+| build | `npm run build`（scripts/build.cjs），mode=production → 读 `.env.production` |
+| 环境变量 | `.env.development` / `.env.production`（仓库提交）+ `.env.example`（模板）；变量 `VITE_DATA_BASE_URL` / `VITE_TILE_SERVICE_BASE` / `VITE_TIANDITU_KEY`，类型见 `src/types/env.d.ts`；**构建时内联**，改完必须重新 dev/build，不能只改服务器上的文件 |
 | 类型检查 | `npx vue-tsc --noEmit -p tsconfig.json`（★ 无测试框架，这就是唯一自动验证手段） |
 
 ## 3. 目录地图
 
 ```
 index.html                     单页入口 #app
+.env.development               dev 环境值：/radar-data/（走 Vite 代理）+ 公网天地图
+.env.production                生产环境值：/data/radarData/（nginx 前缀）+ 内网 WMTS 地址与 tk
+.env.example                   变量模板（清单/含义/读取位置）；现场覆盖用 .env.*.local（已 gitignore）
 vite.config.ts                 public/ 原样拷贝：/libs/*（QE wasm/workers）、/data/*（雷达数据）
 scripts/
   dev.cjs / build.cjs          启动/构建脚本（Node >=18）
@@ -44,8 +48,9 @@ src/
   utils/range.ts               ★ 色标范围：isValueInRange/isValueVisible/valueRangeKey/rangeFromStopIndex/stopIndexFromRange（渲染、取值、图例共用同一口径）
   utils/bzip2.ts               ★ bzip2 解压（seek-bzip + buffer polyfill）：.bz2 雷达基数据在浏览器端解压
   types/index.ts               ★ 数据契约（唯一类型源）：ColorStop/RadarProduct/RadarProductType/RadarFileMeta/RadarGrid/AppConfig/TimelineConfig
+  types/env.d.ts               ImportMetaEnv 补充声明（VITE_ 变量全部可选，缺省走读取处兜底）
   config/products.ts           内置产品静态目录 PRODUCTS（服务器产品目录的回退）+ 8 个产品的专用色标函数；产品 id 与 RSTM 字段名一致（dBZ/dBT/V/W/ZDR/CC/KDP/SNRH）
-  config/dataSource.ts         ★ 雷达数据基地址 DATA_BASE_URL（默认 /radar-data/，由 Vite 代理到 9099）
+  config/dataSource.ts         ★ 雷达数据基地址 DATA_BASE_URL = VITE_DATA_BASE_URL（缺省 /radar-data/，dev 由 Vite 代理到 9099），含尾斜杠兜底
   api/productApi.ts            fetchProductList()（服务器 products.json → 失败回退静态）/findProduct(id)/setProductUrl(url)
   api/configApi.ts             fetchAppConfig()（config.json，缺失回退清单模式）/setConfigUrl(url)/buildTimelineTimes(cfg, anchorMs?) 时间轴生成
   api/radarApi.ts              fetchRadarFileList(url?)（配置 → 远程 manifest → 目录扫描 → 本地回退）/buildFileMetaFromTemplate(template,time)/parseUploadedFile(file,productId)/RadarFileMissingError(404)/fetchRadarGrid(meta, productId) 解压 .bz2 + 按魔数分派解析器（LRU 12 条 + 在途合并）/fetchRstmVolume(meta) RSTM 基数据体取数（LRU 3 条约 54MB + 在途合并；非体数据格式返回 null → 调用方回退合成网格）
@@ -53,7 +58,7 @@ src/
   parse/cinradParser.ts        CINRAD 单站 RSTM："RSTM" 魔数：parseRSTM()（体数据不可解码，恒为合成团块；isSynthetic 恒 true，头部只提供站点定位）；导出 tryParseHeader 供 cinradVolume 复用
   parse/cinradVolume.ts        ★ RSTM 标准格式（CINRAD V2）解析：parseRstmVolume（11 cut → 9 仰角 × 360 方位 × 9 矩 dBT/dBZ/V/W/ZDR/CC/ΦDP/KDP/SNRH）/sampleRstmValue/latLonToPolar/volumeToGrid
   parse/micapsM4Parser.ts      MICAPS 第4类文本：isMicapsM4()/parseMicapsM4()
-  render/mapManager.ts         createRadarMap(el)/applyBaseMap(map,mode)/applyBaseMapToAll(mode)（admin=天地图 vec_w+cva_w；border=国界矢量：陆地 #efefdb、海洋 #97b6e1、界线 #606266，世界/中国 1px、省界 0.8px，按需加载 mapBorder 三份 GeoJSON）/setMapLink/registerMapLink/unregisterMapLink（多屏联动，move 经 rAF 合并）
+  render/mapManager.ts         createRadarMap(el)/applyBaseMap(map,mode)/applyBaseMapToAll(mode)（admin=天地图 vec_w+cva_w，地址由 TILE_SERVICE_BASE 决定：内网 WMTS 或公网 DataServer；border=国界矢量：陆地 #efefdb、海洋 #97b6e1、界线 #606266，世界/中国 1px、省界 0.8px，按需加载 mapBorder 三份 GeoJSON）/setMapLink/registerMapLink/unregisterMapLink（多屏联动，move 经 rAF 合并）
   render/radarRenderer.ts      ★ 核心：renderRadar(smooth,range)/updateRadarProduct/updateRadarSmooth/updateRadarRange/removeRadar/sampleGridValue/firstVisibleThreshold
   store/appStore.ts            Vue reactive 单例全局状态 + mutations（setLayout/setScreenProduct/setScreenSmooth/setScreenRange/setScreenElevations/setScreenElevation/setScreenTime/setFiles/setProducts/setPlaying/setSyncPlay/setSyncMap/setBaseMap/setActiveScreen/setScreenStatus/setTimeline(times,template)/setTimelineConfig/getProductByIdSafe）+ 状态 timeline/fileUrlTemplate/timelineConfig + computed（activeScreen/timelineTimes：优先配置生成，回退 files 推导）；ScreenState.smooth / valueRange / elevations+elevationIndex 均为每屏独立
   components/
@@ -159,7 +164,14 @@ renderRadar **不修改 grid.data**：渲染数据源内部使用“按当前阈
     目录扫描纳入 `.m4` / `.bin` / `.bin.bz2`：`.bz2` 由 `utils/bzip2.ts`（seek-bzip + Buffer polyfill）
     在浏览器端解压，解压后按二进制魔数（RSTM / SWAN / diamond 4）识别格式，不依赖文件名。
     compressjs 仅 Node 可用（浏览器触发 amdefine 报错），前端解压禁止使用它。
-    生产部署需在 nginx 配置同样的 `/radar-data/` 反向代理。
+19. **环境地址只能走 `.env`，不得写回源码**：`VITE_DATA_BASE_URL`（数据前缀）/
+    `VITE_TILE_SERVICE_BASE` + `VITE_TIANDITU_KEY`（底图瓦片，必须成对）。
+    生产的数据前缀**必须与 nginx 的数据 location 前缀逐字一致且末尾带 /**（现网
+    `/data/radarData/` ↔ `location /data { alias E:/ngi/met; }`）；对不上时请求会落到 SPA
+    的 `try_files … /index.html` 回落，返回 **200 的 HTML** 而不是 404 —— 前端把 HTML
+    当二进制解→合成兜底→屏头显示“示意数据”假回波，错得静默、极难发现。
+    另：`/data` 前缀被 nginx 接管后，`dist/data/`（示例 config/products/manifest）在站点上
+    就访问不到了，这些文件要么放数据目录，要么用绝对路径重新映射。
 
 ## 7. 分层规则与编码规范
 
@@ -194,9 +206,20 @@ renderRadar **不修改 grid.data**：渲染数据源内部使用“按当前阈
 改 api 层三个入口即可，上层零改动：产品目录 setProductUrl(url)、应用配置 setConfigUrl(url)
 （时间轴规则 + fileUrlTemplate 文件地址模板，{time} → yyyyMMddHHmmss）、清单 fetchRadarFileList(url)。
 
+### F. 切换部署环境（dev / 生产 / 换服务器）
+只改根目录 `.env.development` / `.env.production` 的值，**不动 src**：
+1. `VITE_DATA_BASE_URL` → 改成目标 nginx 的数据 location 前缀（末尾带 /）；
+2. `VITE_TILE_SERVICE_BASE` → 内网 WMTS 基地址（末尾不带 /），留空 = 公网 DataServer；
+   同时把 `VITE_TIANDITU_KEY` 换成对应环境的 tk（两者不通用）；
+3. `npm run build` 后**必须核对产物**：`Select-String -Path dist\assets\index-*.js -Pattern "<新前缀>"`；
+   变量是构建时内联的，没出现就说明 .env 没被读到（文件名/mode 不对）；
+4. 现场专有值写 `.env.production.local`（不入仓），构建时优先级高于 `.env.production`。
+
 ## 9. 完成定义（DoD）
 
 - [ ] `npx vue-tsc --noEmit -p tsconfig.json` 通过
 - [ ] 未破坏既有功能路径：产品切换（局部刷新）、时间切换（重建）、多屏布局增减、点击取值
+- [ ] 涉外部地址的改动：确认值来自 `.env`（而不是写回源码），且 `npm run build` 后在
+      `dist/assets/index-*.js` 里能 grep 到新地址
 - [ ] 遵守第 6 节硬性约束
 - [ ] 公共 API 有中文 JSDoc；CLAUDE.md 追加本轮变更日志（固定四分区，倒序追加，勿删历史）

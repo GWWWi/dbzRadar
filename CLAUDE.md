@@ -20,6 +20,45 @@
 
 # 迭代变更日志（按时间倒序）
 
+【2026-10-26 本轮改动（环境配置 .env 化 + 生产改内网天地图 WMTS）】
+
+1. 修改文件：`.env.development`、`.env.production`、`.env.example`（新增）、
+   `src/types/env.d.ts`（新增）、`src/config/dataSource.ts`、`src/render/mapManager.ts`、`.gitignore`、`AGENTS.md`、`CLAUDE.md`
+
+2. 修改目的：把 dev/prod 的差异从源码里抽到 `.env`，同时把行政底图从公网 DataServer
+   换成生产内网 WMTS 节点（`http://10.1.65.144:81/{vec_w|cva_w}/wmts`，tk `449b5f7b…`）。
+   诱因：`DATA_BASE_URL` 被改成 `/data/radarData/`（匹配现网 nginx）后，开发环境只剩
+   Vite 代理的 `/radar-data` 一条路径，dev 取数全部 404 —— 两个环境必需不同前缀。
+
+3. 关键规则沉淀：
+   - 变量：`VITE_DATA_BASE_URL`（dev `/radar-data/`、prod `/data/radarData/`）、
+     `VITE_TILE_SERVICE_BASE`（dev 留空=公网、prod 内网 IP）、`VITE_TIANDITU_KEY`（两个 tk 不通用，必须成对）
+   - **只有 `VITE_` 前缀会进入产物，且是构建时内联的字面量** → 改 .env 必须重启 dev / 重新 build；
+     只替换服务器上的 `dist` 而不重建，或只改 nginx 不核前缀，都会静默错环
+   - `DATA_BASE_URL` 加了**尾斜杠兜底**：漏一个 `/` 会拼成 `/data/radarDataZ_RADR_….bz2`，
+     不报错、全量 404，是环境配置里最贵的一种错
+   - 前缀与 nginx 数据 location 不一致时，请求落到 SPA 的 `try_files … /index.html` 回落，
+     返回 **200 的 HTML** 而不是 404；前端把 HTML 当二进制解 → 合成兜底 → 屏头“示意数据”假回波
+     （实测：`/radar-data/manifest.json` 与 `…bin.bz2` 均返回 `200 text/html 493B`）
+   - WMTS 参数陷阱：**路径**用带切片集后缀的 `vec_w/cva_w`，**`LAYER=` 参数**用去后缀的 `vec/cva`；
+     `TILEROW` 在 `w` 切片集里自上而下编号，与 Leaflet 的 `{y}` 同向，**不能做 TMS 翻转**
+   - 内网是单节点 → 去掉 `subdomains`；新增 `maxNativeZoom`：省市级节点常只同步到 10~12 级，
+     低于 18 时把该值改成实际最高层级，否则放大到底图整片 404 变空白
+   - ★瓦片是**浏览器直连**，不是服务端代理★ 每台客户端必须可达该内网 IP；不可达时走
+     nginx 同源反代 `/tianditu/` 并把 base 改成 `/tianditu`（https 站点下 http 瓦片会被混合内容拦截）
+   - `env.d.ts` 必须是无 import/export 的全局脚本，否则 `ImportMetaEnv` 合并失效；
+     字段全部 `?:` 可选，未知 mode（如 `--mode staging`）读到 undefined 时走读取处兜底
+   - `.gitignore` 只新增忽略 `.env`；`.env.development/.env.production` **故意提交**
+     （值是已暴露在前端的地址与 tk，不提交会让新克隆静默退回 dev 默认值）；
+     现场专有值用 `.env.production.local`（已被原有 `*.local` 规则忽略）
+
+4. 验证方式：`npx vue-tsc --noEmit` 通过；`loadEnv` 实测三组值（development 走代理前缀与公网 tk、
+   production 走 `/data/radarData/` 与内网 tk、staging 返回 `{}` → 兜底生效）；
+   `npm run build` 产物内 `/data/radarData/`、`http://10.1.65.144:81`、内网 tk 均存在，
+   公网 tk 未泄漏进生产包；`GetProblems` 0 诊断。
+   ⚠ 本机 curl `10.1.65.144:81` 四次全 `000`（不在该网段），**瓦片实际能否出图尚未验证**，
+   需在可达机器上拉一张 z=6 瓦片确认 200 + `image/png`。
+
 【2026-10-21 本轮改动（修正默认产品 id 与图例标题重复）】
 
 1. 修改文件：`src/store/appStore.ts`、`src/App.vue`、`src/parse/mosaicParser.ts`、`src/parse/micapsM4Parser.ts`、`src/parse/cinradParser.ts`、`src/components/Legend.vue`、`src/components/ProductList.vue`、`CLAUDE.md`

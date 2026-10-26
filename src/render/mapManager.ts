@@ -21,8 +21,27 @@ import worldBorderUrl from '../mapBorder/worldGJ.json?url';
 import chinaBorderUrl from '../mapBorder/chinaGJ.json?url';
 import provinceBorderUrl from '../mapBorder/chinaSJ.json?url';
 
-/** 天地图 key（用户提供的开发者 key） */
-export const TIANDITU_KEY = '06e4468af90602eeac0786f63b17cc69';
+/**
+ * 天地图瓦片服务基地址（环境变量 `VITE_TILE_SERVICE_BASE`，
+ * .env.development / .env.production，★ 构建时内联，改 .env 要重新构建 ★）。
+ *
+ * 内网节点按 WMTS（KVP 编码）寻址，切片路径形如 `<base>/vec_w/wmts?...`；
+ * 空串/未配置 → 回退公网 DataServer（`https://t{s}.tianditu.gov.cn`，需外网出口）。
+ *
+ * ★ 瓦片由浏览器直接请求，不是服务端代理 ★
+ *   所以 base 必须对**每台客户端**可达。客户端不可达时改成同源反代路径
+ *   （与本项目的数据前缀同一思路），nginx 示例：
+ *     location /tianditu/ {
+ *       proxy_pass http://10.1.65.144:81/;
+ *       proxy_set_header Host $host;
+ *     }
+ *   然后把 base 设为 '/tianditu'（末尾不带 /）。
+ *   另注意混合内容：站点若上 https，http 瓦片会被浏览器拦截，只能走同源反代或 https。
+ */
+export const TILE_SERVICE_BASE: string = import.meta.env.VITE_TILE_SERVICE_BASE ?? '';
+
+/** 天地图 key（`VITE_TIANDITU_KEY`；内网 WMTS 与公网 DataServer 的 tk 不通用，需成对配置） */
+export const TIANDITU_KEY: string = import.meta.env.VITE_TIANDITU_KEY ?? '';
 
 /** 国界底图配色（按需求固定，勿随意调整） */
 const LAND_COLOR = '#efefdb';
@@ -82,34 +101,61 @@ function stripAttribution(el: HTMLElement): void {
 
 /* ───────────────────────── 底图：行政（天地图）/ 国界（矢量） ───────────────────────── */
 
+/** 天地图图层代码：vec_w 矢量底图 / cva_w 中文注记（均属 w = Web 墨卡托切片集） */
+type TileLayerCode = 'vec_w' | 'cva_w';
+
+/**
+ * 生成瓦片地址模板（内网 WMTS 与公网 DataServer 参数名不同，必须分别拼）。
+ *
+ *   · 内网 WMTS（KVP 编码）：{base}/{vec_w|cva_w}/wmts?…&LAYER=vec|cva
+ *       &TILEMATRIXSET=w&TILEMATRIX={z}&TILEROW={y}&TILECOL={x}&tk={key}
+ *     注意 **路径**用带切片集后缀的 vec_w/cva_w，而 **LAYER 参数**用去后缀的 vec/cva。
+ *   · 公网 DataServer：https://t{s}.tianditu.gov.cn/DataServer?T={图层}&X={x}&Y={y}&L={z}
+ *
+ * TILEROW 在 w 切片集中自上而下编号（第 0 行在最北），与 Leaflet 的 {y} 同向，
+ * 因此不需要 TMS 翻转（既不要把 {y} 取负，也不要开 tms:true）。
+ */
+function tileUrlTemplate(layer: TileLayerCode): string {
+  if (!TILE_SERVICE_BASE) {
+    return (
+      `https://t{s}.tianditu.gov.cn/DataServer?T=${layer}` +
+      `&X={x}&Y={y}&L={z}&tk=${TIANDITU_KEY}`
+    );
+  }
+  const layerCode = layer.split('_')[0];
+  return (
+    `${TILE_SERVICE_BASE}/${layer}/wmts?SERVICE=WMTS&REQUEST=GetTile&VERSION=1.0.0` +
+    `&LAYER=${layerCode}&STYLE=default&TILEMATRIXSET=w&FORMAT=tiles` +
+    `&TILEMATRIX={z}&TILEROW={y}&TILECOL={x}&tk=${TIANDITU_KEY}`
+  );
+}
+
 /**
  * 为地图叠加天地图底图与注记。
  *
- * 天地图 DataServer 接口说明：
- *   https://t{s}.tianditu.gov.cn/DataServer?T=<图层代码>&X={x}&Y={y}&L={z}&tk=<key>
- *   - vec_w ：矢量底图（Web 墨卡托）
- *   - cva_w ：矢量中文注记（城市名/道路名），叠加在底图之上
- * 子域 t0 ~ t7 可轮询以提升并发加载速度。
+ * 地址由 tileUrlTemplate 依据 TILE_SERVICE_BASE / TIANDITU_KEY 生成；
+ * 两种服务都是 EPSG:3857 的 256px 切片，与地图 CRS（L.CRS.EPSG3857）直接匹配。
  *
  * @param map QEL.LMap 地图实例
  * @returns 本次添加的图层（切换底图时按此数组整体移除）
  */
 export function addTiandituBase(map: LMap): L.Layer[] {
-  const key = TIANDITU_KEY;
-  const common = {
-    subdomains: '01234567',
-    maxZoom: 18
+  const common: L.TileLayerOptions = {
+    // 内网是单节点地址，模板里没有 {s} 占位符；仅公网回退时启用 t0~t7 子域轮询
+    ...(TILE_SERVICE_BASE ? {} : { subdomains: '01234567' }),
+    maxZoom: 18,
+    // ★ 内网节点的切片层级若低于 18（省市级节点常只同步到 10~12 级），
+    //   把此值改成实际最高层级：Leaflet 会用上级瓦片放大补齐，
+    //   否则超出层级会整片请求 404、底图变空白。
+    maxNativeZoom: 18
   };
   // 矢量底图
-  const vec = L.tileLayer(
-    `https://t{s}.tianditu.gov.cn/DataServer?T=vec_w&X={x}&Y={y}&L={z}&tk=${key}`,
-    { ...common, attribution: '© 天地图' }
-  ).addTo(map as unknown as L.Map);
+  const vec = L.tileLayer(tileUrlTemplate('vec_w'), {
+    ...common,
+    attribution: ''
+  }).addTo(map as unknown as L.Map);
   // 中文注记层（保证地名始终压在雷达回波之上更易判读时，可调整 pane）
-  const cva = L.tileLayer(
-    `https://t{s}.tianditu.gov.cn/DataServer?T=cva_w&X={x}&Y={y}&L={z}&tk=${key}`,
-    common
-  ).addTo(map as unknown as L.Map);
+  const cva = L.tileLayer(tileUrlTemplate('cva_w'), common).addTo(map as unknown as L.Map);
 
   return [vec, cva];
 }

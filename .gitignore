@@ -8,3 +8,9 @@ dist/
 # 本地日志与临时文件
 *.log
 *.local
+
+# 环境变量：.env.development / .env.production / .env.example 随仓库提交
+#（值都是构建期内联到前端产物的公开地址与 tk，不是机密；不提交会导致新克隆
+#  构建时静默退回开发兜底值，生产包指向错误前缀）
+# 现场专有覆盖值写 .env.local 或 .env.<mode>.local（已被上面的 *.local 忽略）
+.env

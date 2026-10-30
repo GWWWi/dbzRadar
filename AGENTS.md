@@ -22,6 +22,7 @@
 | 环境变量 | `.env.development` / `.env.production`（仓库提交）+ `.env.example`（模板）；变量 `VITE_DATA_BASE_URL` / `VITE_TILE_SERVICE_BASE` / `VITE_TIANDITU_KEY`，类型见 `src/types/env.d.ts`；**构建时内联**，改完必须重新 dev/build，不能只改服务器上的文件 |
 | 类型检查 | `npx vue-tsc --noEmit -p tsconfig.json`（★ 无测试框架，这就是唯一自动验证手段） |
 | 部署 | `docs/DEPLOY_GUIDE.md`（现场实测值/目录与端口清单/nginx 说明/发布与验收步骤/待决项） |
+| 用户手册 | `docs/USER_GUIDE.md`（面向值班/业务使用者：界面、状态文案含义、读图口径、FAQ） |
 
 ## 3. 目录地图
 
@@ -31,6 +32,7 @@ index.html                     单页入口 #app
 .env.production                生产环境值：/data/radarData/（nginx 前缀）+ 内网 WMTS 地址与 tk
 .env.example                   变量模板（清单/含义/读取位置）；现场覆盖用 .env.*.local（已 gitignore）
 docs/DEPLOY_GUIDE.md            ★ 部署运行手册（基于现网实测，改环境/改 nginx 前先查它）
+docs/USER_GUIDE.md              ★ 用户使用手册（面向操作人员，写 UI 行为与读图口径）
 vite.config.ts                 public/ 原样拷贝：/libs/*（QE wasm/workers）、/data/*（雷达数据）
 scripts/
   dev.cjs / build.cjs          启动/构建脚本（Node >=18）
@@ -67,7 +69,7 @@ src/
     Toolbar.vue                布局切换(1/2/4/6屏)/同步开关/地图联动开关/播放按钮
     ProductList.vue            左侧产品列表（作用于激活屏）
     TimeAxis.vue               Canvas 刻度轴（样式参考 timeline-canvas）：拖拽左右任意平移（不触发取数），松手后吸附最近时次并 emit('change') 加载对应文件；点击跳转/滚轮缩放；顶条绿色刻度=有文件时次；受控组件；重绘经 rAF 合并，marks 升序二分只画可见区间
-    Timeline.vue               底部时间轴（syncPlay 时广播全部屏；TimeAxis 刻度轴 + 上一/下一时次；Element Plus 控件：el-date-picker 选锚点（配置模式，预报起报/实况结束，改选重生成时间轴）+ el-date-picker 跳转时次（显示 YYYY-MM-DD HH:mm，值 YYYYMMDDHHmm，吸附最近可用时次））
+    Timeline.vue               底部时间轴（syncPlay 时广播全部屏；TimeAxis 刻度轴 + 上一/下一时次；Element Plus 控件：el-date-picker 选锚点（配置模式，预报起报/实况结束，改选重生成时间轴）+ el-date-picker 跳转时次（显示 YYYY-MM-DD HH:mm，值 YYYYMMDDHHmm，**不做吸附**：按分钟精确定位，清单时刻带秒时可能匹配不上 →“该时次无数据”））
     RadarScreen.vue            ★ 单屏容器：建图/watch 取数渲染/点击取值 popup/无文件提示“该时次无数据”/屏头仰角选择（仅 RSTM 基数据体 9 层显示）/屏头平滑开关（每屏独立）/屏头上传按钮（每屏独立，格式识别后本屏渲染）/卸载销毁
     Legend.vue                 右下角色标浮层（可拖拽；每屏独立的色标范围：自绘双圆点手柄叠加在色标条上，只显示所选区间颜色，范围外透明）；坐标查询已独立到 radar-screen 的 .coord-query 面板
 ```

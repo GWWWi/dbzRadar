@@ -30,7 +30,7 @@
 |---|---|---|---|
 | Node.js | **仅构建机**需要 | ≥ 18 | `node -v`（本机 20.19.2） |
 | nginx | 站点 + 数据下发 | 1.25.1 及以上（1.21+ 自带 wasm MIME） | `.\nginx.exe -v` |
-| 浏览器 | 运行端 | 支持 WebGL2（Chrome/Edge 现代版本）；HTTP 即可，无需 HTTPS | — |
+| 浏览器 | 运行端 | 支持 **WebGL2**（QuickEarth `consts.useWebGL2` 默认 `true`）；HTTP 即可，无需 HTTPS | 只有 WebGL1 的客户端：`src/main.ts` 里设 `consts.useWebGL2 = false` 后重新构建（QE 控制台会打印使用版本 1/2） |
 | 9099 静态数据服务 | **仅 dev**（Vite 代理后端） | dev 机器本机 | `Get-NetTCPConnection -LocalPort 9099` |
 
 ### 1.2 目录（四个，缺一不可）

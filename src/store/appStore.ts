@@ -38,8 +38,13 @@ export interface ScreenState {
   productId: string;
   /** 本屏当前观测时刻 ISO 串（不同屏可不同 → 时间对比） */
   time: string;
-  /** 加载状态文本（'加载中...' 等，空串表示空闲） */
+  /** 展示用状态文本（'加载中…'/'该时次无数据' 等，空串表示空闲） */
   status: string;
+  /**
+   * 是否正在取数/解析（播放避让用）。
+   * ★ 不要用 status 字符串判断加载态：文案会变，且“识别中…”等状态也属于忙。
+   */
+  loading: boolean;
   /** 本屏色斑图平滑开关（每屏独立）：true=双线性插值，false=格点填色（原始色块） */
   smooth: boolean;
   /**
@@ -90,6 +95,7 @@ function createScreens(n: number): ScreenState[] {
     productId: 'dBZ',
     time: '',
     status: '',
+    loading: false,
     smooth: false,
     valueRange: null, // 默认全范围（不裁剪色标）
     elevations: [], // 非 RSTM 基数据体时为空（UI 隐藏仰角选择器）
@@ -140,6 +146,7 @@ export function setLayout(layout: LayoutType): void {
       productId: 'dBZ',
       time: '',
       status: '',
+      loading: false,
       smooth: false,
       valueRange: null,
       elevations: [],
@@ -155,6 +162,7 @@ export function setLayout(layout: LayoutType): void {
         productId: base.productId,
         time: base.time,
         status: '',
+        loading: false,
         smooth: base.smooth,
         valueRange: base.valueRange ? { ...base.valueRange } : null,
         elevations: [],
@@ -320,10 +328,19 @@ export function setBaseMap(mode: BaseMapMode): void {
   appState.baseMap = mode;
 }
 
-/** 更新某屏加载状态提示 */
+/** 更新某屏展示状态文本（不参与播放避让判断） */
 export function setScreenStatus(id: number, status: string): void {
   const s = findScreen(id);
   if (s) s.status = status;
+}
+
+/**
+ * 设置某屏“正在取数/解析”标记。
+ * 播放避让应读本字段，而不是比较 status 文案。
+ */
+export function setScreenLoading(id: number, loading: boolean): void {
+  const s = findScreen(id);
+  if (s) s.loading = loading;
 }
 
 /**
@@ -371,6 +388,7 @@ const EMPTY_SCREEN: ScreenState = {
   productId: 'dBZ',
   time: '',
   status: '',
+  loading: false,
   smooth: false,
   valueRange: null,
   elevations: [],

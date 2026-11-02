@@ -17,6 +17,7 @@ import {
   appState,
   getProductByIdSafe,
   setScreenStatus,
+  setScreenLoading,
   setScreenSmooth,
   setScreenElevations,
   setScreenElevation,
@@ -179,6 +180,10 @@ async function refresh(): Promise<void> {
   const sc = screen.value;
   if (!sc || !map) return;
 
+  // 每次刷新先复位忙标记：旧请求的 token 已作废，其 catch 不会再改状态；
+  // 若本次走取数分支，下面会重新置 true。
+  setScreenLoading(props.screenId, false);
+
   const product = getProductByIdSafe(sc.productId);
   if (!product || !sc.time) return;
 
@@ -248,6 +253,7 @@ async function refresh(): Promise<void> {
     }
 
     // 时间变化或首次 → 拉取并解析数据，重建图层
+    setScreenLoading(props.screenId, true);
     setScreenStatus(props.screenId, '加载中…');
     // 取消上一次仍在下载的请求：否则切时次时会有多个大文件并行下载
     inflight?.abort();
@@ -290,6 +296,7 @@ async function refresh(): Promise<void> {
     layerRange = range;
     // 数据加载完成 → 按数据范围定位（同区域切时次不会重置用户视野）
     fitToGrid(grid);
+    setScreenLoading(props.screenId, false);
     setScreenStatus(
       props.screenId,
       grid.isSynthetic ? '示意数据' : ''
@@ -297,8 +304,13 @@ async function refresh(): Promise<void> {
   } catch (e) {
     // 过期请求的失败同样不能影响当前屏的状态
     if (token !== refreshToken) return;
-    // 主动取消（切时次/卸载）不是错误：保留当前画面，也不要弹“加载失败”
-    if (e instanceof DOMException && e.name === 'AbortError') return;
+    setScreenLoading(props.screenId, false);
+    // 主动取消（切时次/换产品/所有等待者都取消）不是错误：
+    // 保留当前画面，同时清掉“加载中…”，避免 App 播放避让永久暂停。
+    if (e instanceof DOMException && e.name === 'AbortError') {
+      setScreenStatus(props.screenId, '');
+      return;
+    }
     console.error('[RadarScreen] 渲染失败：', e);
     // 失败时保留旧画面会让用户误读成“该时次的数据”，因此一并清空
     clearLayer();
@@ -509,6 +521,7 @@ async function onUploadChange(e: Event): Promise<void> {
   // 避免几百毫秒后旧上传文件覆盖用户新选的时次画面。
   const token = ++refreshToken;
   try {
+    setScreenLoading(props.screenId, true);
     setScreenStatus(props.screenId, '识别中…');
     const grid = await parseUploadedFile(file, sc.productId);
     if (token !== refreshToken) return;
@@ -528,11 +541,13 @@ async function onUploadChange(e: Event): Promise<void> {
     setScreenElevations(props.screenId, []);
     // 上传的数据区域可能与当前视野不同，重新定位到新数据范围
     fitToGrid(grid);
+    setScreenLoading(props.screenId, false);
     setScreenStatus(props.screenId, '上传数据');
     ElMessage.success(`文件识别成功：${file.name}`);
   } catch (e) {
-    // 过期上传的失败提示同样不应打扰当前操作
+    // 过期上传的失败提示同样不应打扰当前操作（新操作负责管理 loading）
     if (token !== refreshToken) return;
+    setScreenLoading(props.screenId, false);
     console.error('[RadarScreen] 上传文件识别失败：', e);
     setScreenStatus(props.screenId, '文件格式不符');
     ElMessage.error(e instanceof Error ? e.message : '文件格式不符合预设格式');

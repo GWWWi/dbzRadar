@@ -15,10 +15,43 @@
   - `src/utils/http.ts`：带超时的 fetch 封装（所有网络请求统一入口）
   - `src/utils/range.ts`：色标数值范围判断与档位↔数值换算（渲染 / 取值 / 图例共用）
   - `src/constants.ts`：跨层共享常量（统一缺测哨兵 `UNDEF`）
-- 环境配置：`npm run dev`（scripts/dev.cjs，端口 5179）、`npm run build`；类型检查 `npx vue-tsc --noEmit`
+- 环境配置：`npm run dev`（scripts/dev.cjs，端口 5179）、`npm run build`；类型检查 `npx vue-tsc --noEmit`；单元测试 `npm test`（Vitest）
 - 数据契约：`src/types/index.ts` 中 RadarGrid —— x 经度/y 纬度，data 行优先一维数组，yDelta<0 表示第 0 行在最北；undef 为缺测哨兵值
 
 # 迭代变更日志（按时间倒序）
+
+【2026-11-02 本轮改动（P0 稳定性：取数并发 / 缓存 / 时区 / 播放状态 + Vitest）】
+
+1. 修改文件：`src/api/radarApi.ts`、`src/store/appStore.ts`、`src/components/RadarScreen.vue`、
+   `src/components/TimeAxis.vue`、`src/App.vue`、`src/api/configApi.ts`、`package.json`、
+   `vitest.config.ts`（新增）、`src/api/radarApi.test.ts` / `src/api/configApi.test.ts` /
+   `src/store/appStore.test.ts` / `src/utils/datetime.test.ts` / `src/utils/range.test.ts`（新增）、
+   `AGENTS.md`、`CLAUDE.md`
+
+2. 修改目的：先处理“会让屏永久停在加载中 / 重复下载 / 内存不可控”的 P0 边界，
+   再为后续拆 RadarScreen 与 radarApi 建立最小回归测试基线。
+
+3. 关键规则沉淀：
+   - 共享任务（SharedTask）把“调用方等待”与“底层下载”分离：每个调用方只取消自己的等待，
+     waiters 归零才 abort；禁止再把第一个调用方的 AbortSignal 直接传给共享 fetch。
+   - AbortError 不再静默 return：RadarScreen 清 `ScreenState.loading` 与 status（保留旧画面），
+     否则 App 的播放避让会永久跳过。
+   - `ScreenState.loading` 与 `status` 解耦：播放避让读 loading；syncPlay=true 等全部屏，
+     false 只等激活屏；禁止比较 `'加载中…'` 字符串。
+   - RSTM 非标准文件：`fetchAndDecompress` 统一“下载+解压”；`parseRstmVolume` 返回 null 时
+     暂存已解压 buffer（上限 2）供 `fetchRadarGrid` 回退复用；`noVolumeFiles` 负缓存（上限 20）
+     避免每次切时次重复试解析。最多下载一次。
+   - 缓存双重上限：grid 12 条 / 160MB、volume 3 份 / 384MB，超限按 LRU 淘汰且至少保留 1 条；
+     App 卸载时调用 `clearGridCache` / `clearVolumeCache`。
+   - 时间语义：TimeAxis 刻度改用 `msToISO`（固定北京时间），禁止 `new Date().getHours()`；
+     `maxSpanHours` 改普通函数（timesMs 非响应式，computed 会永久缓存旧跨度）；
+     `snapNearestTime` 改用 `isoToMs`。
+   - Vitest 1.6：`npm test` / `npm run test:watch`；测试用 2×2 MICAPS m4 文本，
+     不依赖真实雷达大文件，也不 import QE/地图模块。
+
+4. 验证方式：`npx vue-tsc --noEmit -p tsconfig.json` 通过；`npm test` 5 个文件 28 个用例全通过；
+   `npm run build` 成功（vue-tsc + vite build）。并发用例覆盖“单方取消不影响其它屏 /
+   全部取消才中止下载 / 缓存命中不重复请求”。
 
 【2026-10-27 本轮改动（新增用户使用手册）】
 

@@ -19,7 +19,7 @@
  */
 
 import type { AppConfig, TimelineConfig } from '../types';
-import { msToISO } from '../utils/datetime';
+import { isoToMs, msToISO } from '../utils/datetime';
 import { fetchWithTimeout } from '../utils/http';
 
 /** 配置文件地址（默认站点 /data/config.json，可用 setConfigUrl 改指向） */
@@ -143,16 +143,17 @@ export async function fetchLatestTime(productId: string): Promise<string> {
  */
 export function snapNearestTime(times: string[], target: string): string {
   if (!times.length) return target;
-  const t = new Date(target).getTime();
+  // 统一走 isoToMs：无时区 ISO 串按北京时间解析，不能交给 new Date（浏览器本地时区）
+  const t = isoToMs(target);
   let lo = 0;
   let hi = times.length - 1;
   while (lo < hi) {
     const mid = (lo + hi) >> 1;
-    if (new Date(times[mid]).getTime() < t) lo = mid + 1;
+    if (isoToMs(times[mid]) < t) lo = mid + 1;
     else hi = mid;
   }
   const near =
-    lo > 0 && t - new Date(times[lo - 1]).getTime() <= new Date(times[lo]).getTime() - t
+    lo > 0 && t - isoToMs(times[lo - 1]) <= isoToMs(times[lo]) - t
       ? times[lo - 1]
       : times[lo];
   return near;

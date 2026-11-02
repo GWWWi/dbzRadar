@@ -18,7 +18,7 @@
 <script setup lang="ts">
 import { onMounted, onBeforeUnmount, ref, watch, computed, nextTick } from 'vue';
 // 时间换算统一走 utils/datetime（与时间轴生成、文件模板保持同一格式源）
-import { isoToMs, msToISO, msToText, pad2 } from '../utils/datetime';
+import { isoToMs, msToISO, msToText } from '../utils/datetime';
 
 const props = defineProps<{
   /** 时间轴全部时刻（ISO 串，升序） */
@@ -90,12 +90,18 @@ const currentMs = computed(() =>
   props.current ? isoToMs(props.current) : Math.floor(Date.now() / 60000) * 60000
 );
 
-/** 可缩放的最大跨度（小时）：时间轴总跨度向上取 4 的倍数，且不小于 24 */
-const maxSpanHours = computed(() => {
+/**
+ * 可缩放的最大跨度（小时）：时间轴总跨度向上取 4 的倍数，且不小于 24。
+ *
+ * ★ 用普通函数而不是 computed ★
+ *   timesMs 是普通变量（非响应式），computed 只会在首次求值后永久缓存，
+ *   times 变化后滚轮缩放上限仍是旧跨度。
+ */
+function maxSpanHours(): number {
   if (timesMs.length < 2) return 24;
   const span = (timesMs[timesMs.length - 1] - timesMs[0]) / 3600000;
   return Math.max(24, Math.ceil(span / 4) * 4);
-});
+}
 
 /** 每像素对应毫秒数 */
 /** 画布左右留白（px）：刻度与文字不贴边，边缘标注不被裁切 */
@@ -184,12 +190,14 @@ function draw(): void {
   ctx.font = '12px sans-serif';
   for (let t = Math.ceil(firstMs / step) * step; t <= lastMs; t += step) {
     const x = Math.round(xFor(t)) + 0.5;
-    const d = new Date(t);
-    const midnight = d.getHours() === 0 && d.getMinutes() === 0;
+    // 统一走 msToISO（固定北京时间）：不能用 new Date().getHours()，
+    // 否则部署在 UTC 容器/海外机器时刻度会整体错 8 小时。
+    const iso = msToISO(t, false); // 'YYYY-MM-DDTHH:mm:00'
+    const midnight = iso.slice(11, 16) === '00:00';
     const text =
       midnight || step >= 86400000
-        ? `${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`
-        : `${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
+        ? iso.slice(5, 10)   // MM-DD
+        : iso.slice(11, 16); // HH:mm
     ctx.beginPath();
     ctx.moveTo(x, 0);
     ctx.lineTo(x, 20);
@@ -305,7 +313,7 @@ function onPointerLeave(): void {
 /** 滚轮缩放可见跨度：向上放大（跨度变小），步长 4h */
 function onWheel(e: WheelEvent): void {
   e.preventDefault();
-  spanHours = Math.min(maxSpanHours.value, Math.max(1, spanHours + (e.deltaY < 0 ? -4 : 4)));
+  spanHours = Math.min(maxSpanHours(), Math.max(1, spanHours + (e.deltaY < 0 ? -4 : 4)));
   draw();
 }
 
@@ -316,7 +324,8 @@ watch(
     // store 侧虽已排序，这里再兜一次底，避免上游传入乱序数组导致吸附错位。
     timesMs = props.times.map(isoToMs).sort((a, b) => a - b);
     marksMs = (props.marks ?? []).map(isoToMs).sort((a, b) => a - b);
-    if (spanHours > maxSpanHours.value) spanHours = maxSpanHours.value;
+    const maxSpan = maxSpanHours();
+    if (spanHours > maxSpan) spanHours = maxSpan;
     viewMs = null; // 时间轴重建后视图重新居中
     draw();
   },

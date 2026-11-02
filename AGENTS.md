@@ -20,7 +20,8 @@
 | dev | `npm run dev`（scripts/dev.cjs，端口 5179，strictPort，`host: true` 监听所有网卡 → 可经本机 IP 局域网访问），mode=development → 读 `.env.development`；`/radar-data` 代理到 `http://localhost:9099/data/radarData` |
 | build | `npm run build`（scripts/build.cjs），mode=production → 读 `.env.production` |
 | 环境变量 | `.env.development` / `.env.production`（仓库提交）+ `.env.example`（模板）；变量 `VITE_DATA_BASE_URL` / `VITE_TILE_SERVICE_BASE` / `VITE_TIANDITU_KEY`，类型见 `src/types/env.d.ts`；**构建时内联**，改完必须重新 dev/build，不能只改服务器上的文件 |
-| 类型检查 | `npx vue-tsc --noEmit -p tsconfig.json`（★ 无测试框架，这就是唯一自动验证手段） |
+| 类型检查 | `npx vue-tsc --noEmit -p tsconfig.json` |
+| 单元测试 | `npm test`（Vitest 1.6；覆盖 datetime/range/configApi/appStore 与取数并发） |
 | 部署 | `docs/DEPLOY_GUIDE.md`（现场实测值/目录与端口清单/nginx 说明/发布与验收步骤/待决项） |
 | 用户手册 | `docs/USER_GUIDE.md`（面向值班/业务使用者：界面、状态文案含义、读图口径、FAQ） |
 
@@ -57,7 +58,7 @@ src/
   config/dataSource.ts         ★ 雷达数据基地址 DATA_BASE_URL = VITE_DATA_BASE_URL（缺省 /radar-data/，dev 由 Vite 代理到 9099），含尾斜杠兜底
   api/productApi.ts            fetchProductList()（服务器 products.json → 失败回退静态）/findProduct(id)/setProductUrl(url)
   api/configApi.ts             fetchAppConfig()（config.json，缺失回退清单模式）/setConfigUrl(url)/buildTimelineTimes(cfg, anchorMs?) 时间轴生成
-  api/radarApi.ts              fetchRadarFileList(url?)（配置 → 远程 manifest → 目录扫描 → 本地回退）/buildFileMetaFromTemplate(template,time)/parseUploadedFile(file,productId)/RadarFileMissingError(404)/fetchRadarGrid(meta, productId) 解压 .bz2 + 按魔数分派解析器（LRU 12 条 + 在途合并）/fetchRstmVolume(meta) RSTM 基数据体取数（LRU 3 条约 54MB + 在途合并；非体数据格式返回 null → 调用方回退合成网格）
+  api/radarApi.ts              fetchRadarFileList(url?)（配置 → 远程 manifest → 目录扫描 → 本地回退）/buildFileMetaFromTemplate(template,time)/parseUploadedFile(file,productId)/RadarFileMissingError(404)/fetchRadarGrid(meta, productId) 解压 .bz2 + 按魔数分派解析器（LRU 12 条/160MB + 共享任务合并，调用方取消只影响自己）/fetchRstmVolume(meta) RSTM 基数据体取数（LRU 3 份/384MB + 共享任务；“非体数据”负缓存 + 失败 buffer 复用，回退合成网格不再双下载）
   parse/mosaicParser.ts        SWAN 拼图 "diamond" 头：isRADAMOSAIC()/parseRADAMOSAIC()
   parse/cinradParser.ts        CINRAD 单站 RSTM："RSTM" 魔数：parseRSTM()（体数据不可解码，恒为合成团块；isSynthetic 恒 true，头部只提供站点定位）；导出 tryParseHeader 供 cinradVolume 复用
   parse/cinradVolume.ts        ★ RSTM 标准格式（CINRAD V2）解析：parseRstmVolume（11 cut → 9 仰角 × 360 方位 × 9 矩 dBT/dBZ/V/W/ZDR/CC/ΦDP/KDP/SNRH）/sampleRstmValue/latLonToPolar/volumeToGrid
@@ -145,7 +146,8 @@ renderRadar **不修改 grid.data**：渲染数据源内部使用“按当前阈
 12. **时间轴时次上限 3000**：超限时 buildTimelineTimes 自动按整分钟放大间隔并 warn；
     默认 6 分钟 × 10 天 = 2401 档，该保护不得改变默认配置的行为。
 13. **网络请求统一走 `utils/http.ts` 的 fetchWithTimeout**：原生 fetch 没有超时，
-    网络半开会让屏永久停在“加载中…”并卡住播放（App 的加载中避让逻辑会一直跳过）。
+    网络半开会让屏永久停在“加载中…”并卡住播放；播放避让读 `ScreenState.loading`
+    （禁止比较 status 文案），AbortError 必须清 loading 且保留旧画面。
 14. **输入边界**：上传文件 ≤200MB；产品色标必须严格升序、RGBA 各分量 0~255、
     至少一个 alpha>0 档（首档不透明只告警不拒绝）。
     单幅网格点数**不设上限**（曾有 400 万点限制，已按需求取消）；超大网格仅由
@@ -168,7 +170,10 @@ renderRadar **不修改 grid.data**：渲染数据源内部使用“按当前阈
     目录扫描纳入 `.m4` / `.bin` / `.bin.bz2`：`.bz2` 由 `utils/bzip2.ts`（seek-bzip + Buffer polyfill）
     在浏览器端解压，解压后按二进制魔数（RSTM / SWAN / diamond 4）识别格式，不依赖文件名。
     compressjs 仅 Node 可用（浏览器触发 amdefine 报错），前端解压禁止使用它。
-19. **环境地址只能走 `.env`，不得写回源码**：`VITE_DATA_BASE_URL`（数据前缀）/
+19. **共享在途请求必须用引用计数取消**：`fetchRadarGrid`/`fetchRstmVolume` 的
+    AbortSignal 只取消调用方自己的等待，waiters 归零时才 abort 底层请求；
+    禁止把第一个调用方的 signal 直接传给共享 fetch（会连累其它屏停在“加载中…”）。
+20. **环境地址只能走 `.env`，不得写回源码**：`VITE_DATA_BASE_URL`（数据前缀）/
     `VITE_TILE_SERVICE_BASE` + `VITE_TIANDITU_KEY`（底图瓦片，必须成对）。
     生产的数据前缀**必须与 nginx 的数据 location 前缀逐字一致且末尾带 /**（现网
     `/data/radarData/` ↔ `location /data { alias E:/ngi/met; }`）；对不上时请求会落到 SPA
@@ -188,6 +193,7 @@ renderRadar **不修改 grid.data**：渲染数据源内部使用“按当前阈
   缺测哨兵统一用 `src/constants.ts` 的 `UNDEF`，禁止解析器各写一份。
 - UI 全局样式进 src/styles.css（带分节注释横线），组件内尽量少写 scoped style。
 - 保持现有代码风格：不改无关格式、不顺手重构。
+- 单元测试与被测模块同目录（`*.test.ts`），用 Vitest；只测纯逻辑，禁止 import QE/地图模块。
 
 ## 8. 常见任务配方
 
@@ -222,6 +228,7 @@ renderRadar **不修改 grid.data**：渲染数据源内部使用“按当前阈
 ## 9. 完成定义（DoD）
 
 - [ ] `npx vue-tsc --noEmit -p tsconfig.json` 通过
+- [ ] `npm test` 通过（改到 utils/api/store 纯逻辑时必须补/改用例）
 - [ ] 未破坏既有功能路径：产品切换（局部刷新）、时间切换（重建）、多屏布局增减、点击取值
 - [ ] 涉外部地址的改动：确认值来自 `.env`（而不是写回源码），且 `npm run build` 后在
       `dist/assets/index-*.js` 里能 grep 到新地址

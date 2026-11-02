@@ -33,7 +33,7 @@ import {
   setTimelineConfig
 } from './store/appStore';
 import { fetchProductList } from './api/productApi';
-import { fetchRadarFileList } from './api/radarApi';
+import { clearGridCache, clearVolumeCache, fetchRadarFileList } from './api/radarApi';
 import { fetchAppConfig, buildTimelineTimes, fetchLatestTime, snapNearestTime } from './api/configApi';
 
 /** 网格布局 class：决定多屏排列方式 */
@@ -85,9 +85,10 @@ watch(
       timer = window.setInterval(() => {
         const times = timelineTimes.value;
         if (times.length === 0) return;
-        // 上一时次仍在加载时不推进：避免 800ms 内堆积多个请求/解析任务
-        // （缓存命中时通常一帧内完成，不会影响正常播放节奏）
-        if (appState.screens.some((s) => s.status === '加载中…')) return;
+        // 上一时次仍在加载时不推进：避免 800ms 内堆积多个请求/解析任务。
+        // 同步播放时所有屏一起推进，需要等全部完成；独立播放只看激活屏。
+        const waitingScreens = appState.syncPlay ? appState.screens : [activeScreen.value];
+        if (waitingScreens.some((s) => s.loading)) return;
         // 取当前屏时间在时间轴上的下一个时次（到尾则回头）
         const cur = times.indexOf(activeScreen.value.time);
         const next = times[(cur + 1 + times.length) % times.length];
@@ -99,6 +100,11 @@ watch(
 
 onBeforeUnmount(() => {
   if (timer) clearInterval(timer);
+  // 生产页面卸载/内嵌场景释放模块级大对象；开发 HMR 跳过，避免每次热更新清空缓存
+  if (!import.meta.hot) {
+    clearGridCache();
+    clearVolumeCache();
+  }
 });
 </script>
 

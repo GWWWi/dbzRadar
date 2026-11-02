@@ -299,6 +299,85 @@ function guessFormat(meta: RadarFileMeta): RadarFileMeta['format'] {
   return 'rstm';
 }
 
+/* ───────────────────────── 共享任务与取消（播放 / 多屏并发） ───────────────────────── */
+
+/**
+ * 取消错误：与网络错误区分。
+ * RadarScreen 捕获 AbortError 时只结束本次等待，不弹“加载失败”。
+ */
+function abortError(): DOMException {
+  return new DOMException('请求已取消', 'AbortError');
+}
+
+/**
+ * 共享任务：同一文件的多屏/多产品请求合并为一次下载 + 解析。
+ *
+ * ★ 为什么需要引用计数 ★
+ *   旧实现把第一个调用方的 AbortSignal 直接传给共享 fetch：第一屏切换时次
+ *   会 abort 掉所有屏共用的请求，其它屏收到 AbortError 后停在“加载中…”。
+ *   现在每个调用方只取消自己的等待，waiters 归零时才真正中止底层请求。
+ */
+interface SharedTask<T> {
+  promise: Promise<T>;
+  controller: AbortController;
+  /** 仍在等待结果的调用方数量 */
+  waiters: number;
+  /** 任务已完成（成功或失败）：此后不再因取消而 abort */
+  settled: boolean;
+}
+
+/** 创建一个共享任务；run 接收任务级 signal（只在所有等待者都取消时 abort） */
+function createSharedTask<T>(run: (signal: AbortSignal) => Promise<T>): SharedTask<T> {
+  const controller = new AbortController();
+  let task!: SharedTask<T>;
+  const promise = run(controller.signal).finally(() => {
+    task.settled = true;
+  });
+  task = { promise, controller, waiters: 0, settled: false };
+  return task;
+}
+
+/**
+ * 等待共享任务；signal 取消只影响本次等待，不影响其它屏。
+ *
+ * 没有 signal 时直接复用任务；有 signal 时把“调用方取消”与“共享任务失败”
+ * 分开处理：前者 reject AbortError，后者原样透传。
+ */
+function joinSharedTask<T>(task: SharedTask<T>, signal?: AbortSignal): Promise<T> {
+  task.waiters++;
+  if (!signal) {
+    return task.promise.finally(() => releaseSharedTask(task));
+  }
+  if (signal.aborted) {
+    releaseSharedTask(task);
+    // 任务可能稍后才失败；挂一个空 catch 避免 unhandled rejection
+    task.promise.catch(() => undefined);
+    return Promise.reject(abortError());
+  }
+  return new Promise<T>((resolve, reject) => {
+    let finished = false;
+    const finish = (action: () => void): void => {
+      if (finished) return;
+      finished = true;
+      signal.removeEventListener('abort', onAbort);
+      releaseSharedTask(task);
+      action();
+    };
+    const onAbort = (): void => finish(() => reject(abortError()));
+    signal.addEventListener('abort', onAbort, { once: true });
+    task.promise.then(
+      (value) => finish(() => resolve(value)),
+      (error) => finish(() => reject(error))
+    );
+  });
+}
+
+/** 一个等待者离开；最后一个离开且任务未完成时中止底层请求 */
+function releaseSharedTask<T>(task: SharedTask<T>): void {
+  task.waiters = Math.max(0, task.waiters - 1);
+  if (!task.settled && task.waiters === 0) task.controller.abort();
+}
+
 /* ───────────────────────── 解析结果缓存（播放 / 多屏性能） ───────────────────────── */
 
 /**
@@ -316,11 +395,20 @@ const gridCache = new Map<string, RadarGrid>();
 const GRID_CACHE_LIMIT = 12;
 
 /**
+ * 缓存总字节预算：防止 RSTM 栅格化 / 超大网格把内存吃满。
+ * 正常 12 条 SWAN 网格约 80MB，不会触发；超过预算时按 LRU 淘汰。
+ */
+const GRID_CACHE_BYTES_LIMIT = 160 * 1024 * 1024;
+
+/** 每个缓存条目的估算字节数（data + 少量元数据） */
+const gridCacheBytes = new Map<string, number>();
+
+/**
  * 在途请求合并表。
  * 多屏同步（syncPlay）时各屏会在同一帧内请求同一时次，
  * 合并后只发生一次 fetch + 一次解析，各屏共享同一个网格对象。
  */
-const pendingGrids = new Map<string, Promise<RadarGrid>>();
+const pendingGrids = new Map<string, SharedTask<RadarGrid>>();
 
 /** 缓存键：文件名 + 产品（模板模式与清单模式对同一文件共用缓存） */
 function cacheKey(meta: RadarFileMeta, productId: string): string {
@@ -339,15 +427,33 @@ function getCachedGrid(key: string): RadarGrid | undefined {
   return hit;
 }
 
-/** 写入缓存并淘汰最久未使用的条目（LRU） */
+/** 写入缓存；先按条数、再按字节预算淘汰最久未使用的条目（LRU） */
 function putCachedGrid(key: string, grid: RadarGrid): void {
   gridCache.delete(key);
   gridCache.set(key, grid);
-  while (gridCache.size > GRID_CACHE_LIMIT) {
+  gridCacheBytes.delete(key);
+  gridCacheBytes.set(key, grid.data.byteLength + 1024);
+
+  while (gridCache.size > GRID_CACHE_LIMIT) evictOldestGrid();
+
+  let totalBytes = 0;
+  for (const bytes of gridCacheBytes.values()) totalBytes += bytes;
+  // 至少保留 1 条：单条超大网格也不能刚写入就被自己挤掉
+  while (totalBytes > GRID_CACHE_BYTES_LIMIT && gridCache.size > 1) {
     const oldest = gridCache.keys().next().value;
     if (oldest === undefined) break;
+    totalBytes -= gridCacheBytes.get(oldest) ?? 0;
     gridCache.delete(oldest);
+    gridCacheBytes.delete(oldest);
   }
+}
+
+/** 淘汰网格缓存中最久未用的一条（条数与字节预算共用） */
+function evictOldestGrid(): void {
+  const oldest = gridCache.keys().next().value;
+  if (oldest === undefined) return;
+  gridCache.delete(oldest);
+  gridCacheBytes.delete(oldest);
 }
 
 /**
@@ -355,7 +461,8 @@ function putCachedGrid(key: string, grid: RadarGrid): void {
  *
  * 三条路径：
  *   1. 缓存命中 → 直接返回（播放回退、多屏共享同一对象，零解析成本）；
- *   2. 同键请求在途 → 复用同一个 Promise（4 屏同步只下载 + 解析一次）；
+ *   2. 同键请求在途 → 复用共享任务（4 屏同步只下载 + 解析一次），
+ *      各调用方的 AbortSignal 只取消自己的等待，不会连累其它屏；
  *   3. 否则 → 执行 loadGrid，成功后写入缓存。
  *
  * ★ 返回的网格可能被多个屏共享，调用方必须只读 ★
@@ -373,34 +480,40 @@ export async function fetchRadarGrid(
   const key = cacheKey(meta, productId);
 
   const cached = getCachedGrid(key);
-  if (cached) return cached;
+  if (cached) {
+    if (signal?.aborted) throw abortError();
+    return cached;
+  }
 
-  const pending = pendingGrids.get(key);
-  if (pending) return pending;
+  // 同键请求在途：复用同一个共享任务；调用方取消只影响自己的等待
+  let task = pendingGrids.get(key);
+  if (!task) {
+    task = createSharedTask((taskSignal) =>
+      loadGrid(meta, productId, taskSignal)
+        .then((grid) => {
+          putCachedGrid(key, grid);
+          return grid;
+        })
+        .finally(() => {
+          // 成功/失败都移除在途记录：失败后下次可重试，不会永久占位
+          pendingGrids.delete(key);
+        })
+    );
+    pendingGrids.set(key, task);
+  }
 
-  const task = loadGrid(meta, productId, signal)
-    .then((grid) => {
-      putCachedGrid(key, grid);
-      return grid;
-    })
-    .finally(() => {
-      // 成功/失败都移除在途记录：失败后下次可重试，不会永久占位
-      pendingGrids.delete(key);
-    });
-
-  pendingGrids.set(key, task);
-  return task;
+  return joinSharedTask(task, signal);
 }
 
 /**
- * 清空网格缓存（切换布局 / 卸载面板时调用）。
+ * 清空网格缓存（手动释放内存 / 调试）。
  *
- * 缓存是模块级常量，不清理的话：单条 mosaic 约 6.7MB（Float32Array），
- * 12 条约 80MB；6 屏 + 反复切换时次会持续累积。缓存对象本身没有生命周期，
- * 只能由调用方在合适的时机显式回收。
+ * 平时由条数上限（12 条）与字节预算（160MB）自动淘汰；
+ * 如有特殊场景需要立即回收，可显式调用本函数。
  */
 export function clearGridCache(): void {
   gridCache.clear();
+  gridCacheBytes.clear();
 }
 
 /** 当前缓存条数（调试/测试用） */
@@ -413,22 +526,135 @@ export function gridCacheSize(): number {
 /**
  * RSTM 基数据体的 LRU 缓存。
  *
- * 体积远大于普通网格：9 层 × 45 方位 × 6 字段 × 1840 库 ≈ 448 万个 Float32
- * （约 18MB/份），因此上限设为 3 份（约 54MB），命中范围覆盖“播放 + 仰角切换”。
+ * 单份体数据 = 9 层 × 数百条径向 × 9 个 Float32Array，实际体积可达上百 MB
+ * （长短圈都保留，旧注释的 18MB 已不适用）。因此除条数上限外还有总字节预算，
+ * 见 VOLUME_CACHE_BYTES_LIMIT；命中范围覆盖“播放 + 仰角切换”。
  */
 const volumeCache = new Map<string, RstmVolume>();
+
+/** 每份体数据的估算字节数（用于总字节预算） */
+const volumeCacheBytes = new Map<string, number>();
 const VOLUME_CACHE_LIMIT = 3;
 
+/**
+ * 体数据总字节预算。
+ *
+ * 单份 RSTM 体数据包含 9 层 × 数百条径向 × 9 个 Float32Array，
+ * 实际体积远大于早期注释里的 18MB；这里用预算兜底，避免 3 份缓存把内存吃满。
+ * 单份超预算时仍保留 1 份（否则当前屏会立刻失效）。
+ */
+const VOLUME_CACHE_BYTES_LIMIT = 384 * 1024 * 1024;
+
 /** 在途请求合并表：多屏同步请求同一文件时只下载 + 解压 + 解析一次 */
-const pendingVolumes = new Map<string, Promise<RstmVolume | null>>();
+const pendingVolumes = new Map<string, SharedTask<RstmVolume | null>>();
+
+/**
+ * “确认不是标准体数据”的文件负缓存。
+ *
+ * 这类文件走合成网格兜底，但每次切时次都重新下载 + 解压 + 试解析一次
+ * 是纯浪费；记住后直接回退 fetchRadarGrid（其网格缓存仍按产品保存）。
+ */
+const noVolumeFiles = new Set<string>();
+const NO_VOLUME_LIMIT = 20;
+
+/**
+ * “体数据解析失败时已解压的原始 buffer”暂存区。
+ *
+ * 非标准 RSTM 文件会走 fetchRadarGrid 的合成兜底；若不暂存，同一文件会被
+ * 第二次下载 + 解压。这里只在上限 2 条内保留，消费后立即删除。
+ */
+const fallbackBuffers = new Map<string, ArrayBuffer>();
+const FALLBACK_BUFFER_LIMIT = 2;
+
+/** 暂存一份已解压的 buffer（带上限，避免失败文件堆积占用内存） */
+function rememberFallbackBuffer(key: string, buffer: ArrayBuffer): void {
+  fallbackBuffers.delete(key);
+  fallbackBuffers.set(key, buffer);
+  while (fallbackBuffers.size > FALLBACK_BUFFER_LIMIT) {
+    const oldest = fallbackBuffers.keys().next().value;
+    if (oldest === undefined) break;
+    fallbackBuffers.delete(oldest);
+  }
+}
+
+/** 取走一份暂存的 buffer（一次性消费；没有则返回 null） */
+function takeFallbackBuffer(key: string): ArrayBuffer | null {
+  const buffer = fallbackBuffers.get(key);
+  if (!buffer) return null;
+  fallbackBuffers.delete(key);
+  return buffer;
+}
+
+/** 估算一份体数据的实际内存占用（所有层、所有径向、所有字段） */
+function estimateVolumeBytes(volume: RstmVolume): number {
+  let bytes = 0;
+  for (const layer of volume.layers) {
+    for (const radial of layer) {
+      for (const field of Object.values(radial.fields)) bytes += field.byteLength;
+    }
+  }
+  return bytes;
+}
+
+/** 记录“该文件不是标准体数据”（带上限，避免长时间运行无限累积） */
+function markNoVolume(key: string): void {
+  noVolumeFiles.add(key);
+  while (noVolumeFiles.size > NO_VOLUME_LIMIT) {
+    const oldest = noVolumeFiles.values().next().value;
+    if (oldest === undefined) break;
+    noVolumeFiles.delete(oldest);
+  }
+}
+
+/** 写入体数据缓存；条数与字节预算任何一项超限都按 LRU 淘汰 */
+function putCachedVolume(key: string, volume: RstmVolume): void {
+  volumeCache.delete(key);
+  volumeCache.set(key, volume);
+  volumeCacheBytes.delete(key);
+  volumeCacheBytes.set(key, estimateVolumeBytes(volume));
+
+  while (volumeCache.size > VOLUME_CACHE_LIMIT) evictOldestVolume();
+
+  let totalBytes = 0;
+  for (const bytes of volumeCacheBytes.values()) totalBytes += bytes;
+  while (totalBytes > VOLUME_CACHE_BYTES_LIMIT && volumeCache.size > 1) {
+    const oldest = volumeCache.keys().next().value;
+    if (oldest === undefined) break;
+    totalBytes -= volumeCacheBytes.get(oldest) ?? 0;
+    volumeCache.delete(oldest);
+    volumeCacheBytes.delete(oldest);
+  }
+}
+
+/** 淘汰体数据缓存中最久未用的一条 */
+function evictOldestVolume(): void {
+  const oldest = volumeCache.keys().next().value;
+  if (oldest === undefined) return;
+  volumeCache.delete(oldest);
+  volumeCacheBytes.delete(oldest);
+}
+
+/** 清空体数据缓存、负缓存与暂存 buffer（手动释放内存 / 允许重新探测文件） */
+export function clearVolumeCache(): void {
+  volumeCache.clear();
+  volumeCacheBytes.clear();
+  noVolumeFiles.clear();
+  fallbackBuffers.clear();
+}
+
+/** 当前体数据缓存条数（调试/测试用） */
+export function volumeCacheSize(): number {
+  return volumeCache.size;
+}
 
 /**
  * 获取 RSTM 基数据体（带缓存与并发合并）。
  *
  * 与 fetchRadarGrid 的分工：
- *   - 本函数返回**真实基数据体**（9 仰角 × 45 方位 × 6 字段）；
+ *   - 本函数返回**真实基数据体**（9 仰角 × 数百条径向 × 9 个字段）；
  *     文件不是基数据体格式（旧合成文件 / 损坏文件）时返回 null，
  *     调用方回退 fetchRadarGrid 的合成网格。
+ *   - 非体数据文件会被记入负缓存，后续时次不再重复下载/试解析。
  *   - 404 / 网络错误仍会抛出，与 fetchRadarGrid 的错误语义保持一致。
  *
  * @param meta   文件清单项
@@ -440,37 +666,76 @@ export async function fetchRstmVolume(
 ): Promise<RstmVolume | null> {
   const key = meta.binFile;
 
+  // 已确认不是标准体数据：不再重复下载/试解析，直接回退合成网格
+  if (noVolumeFiles.has(key)) {
+    if (signal?.aborted) throw abortError();
+    return null;
+  }
+
   const cached = volumeCache.get(key);
   if (cached) {
     // 命中后移到末尾，维护“最近使用序”
     volumeCache.delete(key);
     volumeCache.set(key, cached);
+    if (signal?.aborted) throw abortError();
     return cached;
   }
 
-  const pending = pendingVolumes.get(key);
-  if (pending) return pending;
+  // 同键请求在途：复用共享任务；调用方取消只影响自己的等待
+  let task = pendingVolumes.get(key);
+  if (!task) {
+    task = createSharedTask((taskSignal) =>
+      loadVolume(meta, taskSignal)
+        .then((vol) => {
+          if (vol) putCachedVolume(key, vol);
+          else markNoVolume(key);
+          return vol;
+        })
+        .finally(() => {
+          pendingVolumes.delete(key);
+        })
+    );
+    pendingVolumes.set(key, task);
+  }
 
-  const task = loadVolume(meta, signal)
-    .then((vol) => {
-      // 非基数据体格式不缓存（下次仍要回退合成），避免占满 3 个位置
-      if (vol) {
-        volumeCache.delete(key);
-        volumeCache.set(key, vol);
-        while (volumeCache.size > VOLUME_CACHE_LIMIT) {
-          const oldest = volumeCache.keys().next().value;
-          if (oldest === undefined) break;
-          volumeCache.delete(oldest);
-        }
-      }
-      return vol;
-    })
-    .finally(() => {
-      pendingVolumes.delete(key);
-    });
+  return joinSharedTask(task, signal);
+}
 
-  pendingVolumes.set(key, task);
-  return task;
+/**
+ * 下载并解压一个雷达文件（不解析）。
+ *
+ * 404 / 非 2xx / 解压失败都转成带文件名与原因的 Error；
+ * 404 单独抛 RadarFileMissingError，供 UI 提示“该时次无数据”。
+ */
+async function fetchAndDecompress(
+  meta: RadarFileMeta,
+  signal?: AbortSignal
+): Promise<ArrayBuffer> {
+  const url = resolveDataUrl(meta.binFile);
+  const resp = await fetchWithTimeout(url, undefined, signal);
+  if (resp.status === 404) throw new RadarFileMissingError(url);
+  if (!resp.ok) {
+    throw new Error('加载 ' + meta.binFile + ' 失败：HTTP ' + resp.status);
+  }
+
+  let buf = await resp.arrayBuffer();
+
+  // 雷达基数据常以 .bin.bz2 分发，浏览器端用 seek-bzip 解压后再解析。
+  // 解压后 buf 就是原始基数据，后续格式识别与未压缩文件完全一致。
+  if (meta.compressed || /\.bz2$/i.test(meta.binFile)) {
+    if (!isBzip2Data(buf)) {
+      throw new Error(meta.binFile + ' 不是有效的 bzip2 文件');
+    }
+    try {
+      buf = decompressBzip2(buf);
+    } catch (e) {
+      // 解压失败通常是文件损坏或传输被截断，带上原因便于排查
+      const reason = e instanceof Error ? e.message : String(e);
+      throw new Error(meta.binFile + ' bzip2 解压失败：' + reason);
+    }
+  }
+
+  return buf;
 }
 
 /**
@@ -483,27 +748,13 @@ async function loadVolume(
   meta: RadarFileMeta,
   signal?: AbortSignal
 ): Promise<RstmVolume | null> {
-  const url = resolveDataUrl(meta.binFile);
-  const resp = await fetchWithTimeout(url, undefined, signal);
-  if (resp.status === 404) {
-    throw new RadarFileMissingError(url);
-  }
-  if (!resp.ok) {
-    throw new Error('加载 ' + meta.binFile + ' 失败：HTTP ' + resp.status);
-  }
-
-  let buf = await resp.arrayBuffer();
-
-  // .bz2 压缩的基数据：先解压再解析（与 loadGrid 的解压分支一致）
-  if (meta.compressed || /\.bz2$/i.test(meta.binFile)) {
-    if (!isBzip2Data(buf)) {
-      throw new Error(meta.binFile + ' 不是有效的 bzip2 文件');
-    }
-    buf = decompressBzip2(buf);
-  }
+  const buf = await fetchAndDecompress(meta, signal);
 
   // parseRstmVolume 会做结构校验：合成/损坏文件返回 null → 调用方走合成兜底
-  return parseRstmVolume(buf);
+  const volume = parseRstmVolume(buf);
+  // 非体数据：把已解压 buffer 留给回退的 fetchRadarGrid，避免二次下载/解压
+  if (!volume) rememberFallbackBuffer(meta.binFile, buf);
+  return volume;
 }
 
 /**
@@ -519,33 +770,10 @@ async function loadGrid(
   // 产品元信息：用于合成兜底的峰值/单位标注
   const product = findProduct(productId);
 
-  // —— 1) 拉取文件二进制（清单模式为 data/ 下文件名；模板模式为构造出的完整地址） ——
-  const url = resolveDataUrl(meta.binFile);
-  const resp = await fetchWithTimeout(url, undefined, signal);
-  if (resp.status === 404) {
-    throw new RadarFileMissingError(url);
-  }
-  if (!resp.ok) {
-    throw new Error('加载 ' + meta.binFile + ' 失败：HTTP ' + resp.status);
-  }
-
-  let buf = await resp.arrayBuffer();
-
-  // —— 1.5) bzip2 解压 ——
-  // 雷达基数据常以 .bin.bz2 分发，浏览器端用 seek-bzip 解压后再解析。
-  // 解压后 buf 就是原始基数据，后续格式识别与未压缩文件完全一致。
-  if (meta.compressed || /\.bz2$/i.test(meta.binFile)) {
-    if (!isBzip2Data(buf)) {
-      throw new Error(meta.binFile + ' 不是有效的 bzip2 文件');
-    }
-    try {
-      buf = decompressBzip2(buf);
-    } catch (e) {
-      // 解压失败通常是文件损坏或传输被截断，带上原因便于排查
-      const reason = e instanceof Error ? e.message : String(e);
-      throw new Error(meta.binFile + ' bzip2 解压失败：' + reason);
-    }
-  }
+  // —— 1) 取二进制：优先复用 RSTM 体数据解析失败时留下的已解压 buffer ——
+  //    否则下载 + 解压；两条路径得到同一份原始基数据。
+  if (signal?.aborted) throw abortError();
+  const buf = takeFallbackBuffer(meta.binFile) ?? (await fetchAndDecompress(meta, signal));
 
   // —— 2) 格式识别并分派解析器（魔数优先：bz2 解压后才知真实格式） ——
   const format = detectFormat(buf, meta);

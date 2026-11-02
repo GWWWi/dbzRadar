@@ -71,6 +71,16 @@ export function msToText(ms: number, withSeconds = false): string {
   return msToISO(ms, withSeconds).replace('T', ' ');
 }
 
+/**
+ * ISO 串 → 列表/屏头短文本：'MM-DD HH:mm'（withSeconds=true 时含秒）。
+ * 空串返回 '--'，与列表占位保持一致；业务文件禁止再手写 replace/slice。
+ */
+export function formatShortTime(iso: string, withSeconds = false): string {
+  if (!iso) return '--';
+  const text = iso.replace('T', ' ');
+  return withSeconds ? text.slice(5, 19) : text.slice(5, 16);
+}
+
 /** ISO 串 → 毫秒；非法串返回 NaN（与 new Date().getTime() 行为一致） */
 export function isoToMs(iso: string): number {
   if (!iso) return NaN;

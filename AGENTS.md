@@ -48,31 +48,37 @@ src/
   styles.css                   全局深色主题样式
   constants.ts                 ★ 跨层常量：统一缺测哨兵 UNDEF
   mapBorder/                   ★ 国界底图数据：worldGJ(179 国) / chinaGJ(全国) / chinaSJ(42 省)，合计约 4MB
-  utils/datetime.ts            ★ 时间格式转换唯一实现：msToISO/msToText/isoToMs/isoToCompact/compact12ToISO/digits14ToISO
+  utils/datetime.ts            ★ 时间格式转换唯一实现：msToISO/msToText/formatShortTime/isoToMs/isoToCompact/compact12ToISO/digits14ToISO
   utils/http.ts                ★ fetchWithTimeout（默认 10s）+ FetchTimeoutError：所有网络请求统一走这里
   utils/range.ts               ★ 色标范围：isValueInRange/isValueVisible/valueRangeKey/rangeFromStopIndex/stopIndexFromRange（渲染、取值、图例共用同一口径）
   utils/bzip2.ts               ★ bzip2 解压（seek-bzip + buffer polyfill）：.bz2 雷达基数据在浏览器端解压
-  types/index.ts               ★ 数据契约（唯一类型源）：ColorStop/RadarProduct/RadarProductType/RadarFileMeta/RadarGrid/AppConfig/TimelineConfig
+  types/index.ts               ★ 数据契约（唯一类型源）：ColorStop/RadarProduct/RadarProductType/RadarFileMeta/RadarGrid/RadarQueryResult/AppConfig/TimelineConfig
   types/env.d.ts               ImportMetaEnv 补充声明（VITE_ 变量全部可选，缺省走读取处兜底）
   config/products.ts           内置产品静态目录 PRODUCTS（服务器产品目录的回退）+ 8 个产品的专用色标函数；产品 id 与 RSTM 字段名一致（dBZ/dBT/V/W/ZDR/CC/KDP/SNRH）
   config/dataSource.ts         ★ 雷达数据基地址 DATA_BASE_URL = VITE_DATA_BASE_URL（缺省 /radar-data/，dev 由 Vite 代理到 9099），含尾斜杠兜底
   api/productApi.ts            fetchProductList()（服务器 products.json → 失败回退静态）/findProduct(id)/setProductUrl(url)
   api/configApi.ts             fetchAppConfig()（config.json，缺失回退清单模式）/setConfigUrl(url)/buildTimelineTimes(cfg, anchorMs?) 时间轴生成
-  api/radarApi.ts              fetchRadarFileList(url?)（配置 → 远程 manifest → 目录扫描 → 本地回退）/buildFileMetaFromTemplate(template,time)/parseUploadedFile(file,productId)/RadarFileMissingError(404)/fetchRadarGrid(meta, productId) 解压 .bz2 + 按魔数分派解析器（LRU 12 条/160MB + 共享任务合并，调用方取消只影响自己）/fetchRstmVolume(meta) RSTM 基数据体取数（LRU 3 份/384MB + 共享任务；“非体数据”负缓存 + 失败 buffer 复用，回退合成网格不再双下载）
+  api/radarApi.ts              对外门面：fetchRadarGrid/fetchRstmVolume 的缓存编排 + 兼容导出（原有 import 路径不变）
+  api/radarCache.ts            ★ LruCache（条数/字节双上限）+ SharedTask（引用计数取消，waiters 归零才 abort）
+  api/radarManifest.ts         清单发现（配置 → manifest → 目录扫描 → 本地回退）/buildFileMetaFromTemplate/resolveDataUrl
+  api/radarSource.ts           下载 + bz2 解压 + 魔数识别 + loadGrid/loadVolume/parseUploadedFile + 失败 buffer 复用
   parse/mosaicParser.ts        SWAN 拼图 "diamond" 头：isRADAMOSAIC()/parseRADAMOSAIC()
   parse/cinradParser.ts        CINRAD 单站 RSTM："RSTM" 魔数：parseRSTM()（体数据不可解码，恒为合成团块；isSynthetic 恒 true，头部只提供站点定位）；导出 tryParseHeader 供 cinradVolume 复用
   parse/cinradVolume.ts        ★ RSTM 标准格式（CINRAD V2）解析：parseRstmVolume（11 cut → 9 仰角 × 360 方位 × 9 矩 dBT/dBZ/V/W/ZDR/CC/ΦDP/KDP/SNRH）/sampleRstmValue/latLonToPolar/volumeToGrid
   parse/micapsM4Parser.ts      MICAPS 第4类文本：isMicapsM4()/parseMicapsM4()
   render/mapManager.ts         createRadarMap(el)/applyBaseMap(map,mode)/applyBaseMapToAll(mode)（admin=天地图 vec_w+cva_w，地址由 TILE_SERVICE_BASE 决定：内网 WMTS 或公网 DataServer；border=国界矢量：陆地 #efefdb、海洋 #97b6e1、界线 #606266，世界/中国 1px、省界 0.8px，按需加载 mapBorder 三份 GeoJSON）/setMapLink/registerMapLink/unregisterMapLink（多屏联动，move 经 rAF 合并）
   render/radarRenderer.ts      ★ 核心：renderRadar(smooth,range)/updateRadarProduct/updateRadarSmooth/updateRadarRange/removeRadar/sampleGridValue/firstVisibleThreshold
-  store/appStore.ts            Vue reactive 单例全局状态 + mutations（setLayout/setScreenProduct/setScreenSmooth/setScreenRange/setScreenElevations/setScreenElevation/setScreenTime/setFiles/setProducts/setPlaying/setSyncPlay/setSyncMap/setBaseMap/setActiveScreen/setScreenStatus/setTimeline(times,template)/setTimelineConfig/getProductByIdSafe）+ 状态 timeline/fileUrlTemplate/timelineConfig + computed（activeScreen/timelineTimes：优先配置生成，回退 files 推导）；ScreenState.smooth / valueRange / elevations+elevationIndex 均为每屏独立
+  store/appStore.ts            Vue reactive 单例全局状态 + mutations（setLayout/setScreenProduct/setScreenSmooth/setScreenRange/setScreenElevations/setScreenElevation/setScreenTime/setFiles/setProducts/setPlaying/setSyncPlay/setSyncMap/setBaseMap/setActiveScreen/setScreenStatus/setScreenLoading/setTimeline(times,template)/setTimelineConfig/getProductByIdSafe）+ 状态 timeline/fileUrlTemplate/timelineConfig + computed（activeScreen/timelineTimes）；ScreenState.smooth / valueRange / elevations+elevationIndex 每屏独立，loading 为播放避让的忙标记
+  composables/useRadarScreen.ts ★ 单屏地图/取数/图层状态机：建图销毁、watch 刷新、局部更新、取值、上传
   components/
     Toolbar.vue                布局切换(1/2/4/6屏)/同步开关/地图联动开关/播放按钮
     ProductList.vue            左侧产品列表（作用于激活屏）
     TimeAxis.vue               Canvas 刻度轴（样式参考 timeline-canvas）：拖拽左右任意平移（不触发取数），松手后吸附最近时次并 emit('change') 加载对应文件；点击跳转/滚轮缩放；顶条绿色刻度=有文件时次；受控组件；重绘经 rAF 合并，marks 升序二分只画可见区间
     Timeline.vue               底部时间轴（syncPlay 时广播全部屏；TimeAxis 刻度轴 + 上一/下一时次；Element Plus 控件：el-date-picker 选锚点（配置模式，预报起报/实况结束，改选重生成时间轴）+ el-date-picker 跳转时次（显示 YYYY-MM-DD HH:mm，值 YYYYMMDDHHmm，**不做吸附**：按分钟精确定位，清单时刻带秒时可能匹配不上 →“该时次无数据”））
-    RadarScreen.vue            ★ 单屏容器：建图/watch 取数渲染/点击取值 popup/无文件提示“该时次无数据”/屏头仰角选择（仅 RSTM 基数据体 9 层显示）/屏头平滑开关（每屏独立）/屏头上传按钮（每屏独立，格式识别后本屏渲染）/卸载销毁
-    Legend.vue                 右下角色标浮层（可拖拽；每屏独立的色标范围：自绘双圆点手柄叠加在色标条上，只显示所选区间颜色，范围外透明）；坐标查询已独立到 radar-screen 的 .coord-query 面板
+    RadarScreen.vue            ★ 单屏容器（薄壳）：组合 useRadarScreen + ScreenHeader + CoordinateQuery + Legend
+    ScreenHeader.vue           屏头：序号/产品/时间/状态、仰角选择（仅 RSTM 基数据体）、平滑开关、上传入口（emit File）
+    CoordinateQuery.vue        坐标查询面板：输入校验 + 展示取样结果（sample 回调由父组件注入，不持有地图/图层）
+    Legend.vue                 右下角色标浮层（可拖拽；每屏独立的色标范围：自绘双圆点手柄叠加在色标条上，只显示所选区间颜色，范围外透明）
 ```
 
 ## 4. 核心数据契约（src/types/index.ts）
@@ -105,8 +111,8 @@ renderRadar **不修改 grid.data**：渲染数据源内部使用“按当前阈
           （有 fileUrlTemplate → 模板模式；无 → 再 fetchRadarFileList(cfg.fileListUrl)）
         → config 缺失: setFiles(fetchRadarFileList()) 清单回退模式（时间轴=清单时刻）
 
-单屏:   RadarScreen.onMounted → createRadarMap + applyBaseMap(map, appState.baseMap) + registerMapLink + map.on('click')
-        watch(productId|time|smooth) → refresh():
+单屏:   RadarScreen → useRadarScreen.onMounted → createRadarMap + applyBaseMap + registerMapLink + map.on('click')
+        watch(productId|time|smooth|range|elevation) → refresh():
           文件解析: 模板模式 buildFileMetaFromTemplate(tpl, time)；
                     清单模式 files.find(time)，找不到 → 状态提示“该时次无数据”
           仅产品变(时间同) → updateRadarProduct(layer, grid, oldThreshold, product, smooth)
@@ -136,8 +142,8 @@ renderRadar **不修改 grid.data**：渲染数据源内部使用“按当前阈
 4. **QE 资源路径必须在 qeInit 前设置**（main.ts 已处理，勿动顺序）。
 5. **缺测哨兵统一 999999**（SYNTH_UNDEF/UNDEF），新解析器必须遵守。
 6. **多屏地图容器 id 必须唯一**：`'radar-map-' + screenId`。
-7. **非响应式对象不进 reactive**：map/layer/grid 用普通变量保存（见 RadarScreen）。
-8. **时间轴升序依赖** manifest.json 排序，radarApi 内已再 sort 双保险。
+7. **非响应式对象不进 reactive**：map/layer/grid 用普通变量保存（见 useRadarScreen）。
+8. **时间轴升序依赖** manifest.json 排序，radarManifest 内已再 sort 双保险。
 9. yDelta 可正可负，任何行号换算禁止假设"第 0 行在南"。
 10. **时间轴与文件解耦**：配置模式时间轴按规则生成，时次未必有文件——
     清单模式找不到或模板模式 404 都必须提示"该时次无数据"，不得静默失败。
@@ -184,8 +190,8 @@ renderRadar **不修改 grid.data**：渲染数据源内部使用“按当前阈
 
 ## 7. 分层规则与编码规范
 
-- 依赖方向单向：`components → api/render → parse → types`；store 可被 components/api 之上所有层引用。
-  禁止反向依赖（parse 不得 import api/render/components）。
+- 依赖方向单向：`components → composables → api/render → parse → types`；composables 可引用 store，
+  store 可被 components/api 之上所有层引用。禁止反向依赖（parse 不得 import api/render/components）。
 - 注释：中文 JSDoc 风格，说明"为什么"；每个文件头部有一段职责总述。新增公共导出必须带注释。
 - 命名：文件 kebab-case（ts）/PascalCase（Vue 组件）；CSS 类沿用 styles.css 现有 BEM-ish 风格。
 - 类型集中放 types/index.ts，不在业务文件里重复定义领域模型。
@@ -210,7 +216,7 @@ renderRadar **不修改 grid.data**：渲染数据源内部使用“按当前阈
 运行中切产品走 updateRadarProduct 局部刷新。
 
 ### D. 新增地图交互
-参考 RadarScreen.vue 的 onMapClick：LMap 即 Leaflet Map，直接用原生事件/L.popup/L.marker。
+参考 `composables/useRadarScreen.ts` 的 onMapClick：LMap 即 Leaflet Map，直接用原生事件/L.popup/L.marker。
 
 ### E. 接入真实后端
 改 api 层三个入口即可，上层零改动：产品目录 setProductUrl(url)、应用配置 setConfigUrl(url)

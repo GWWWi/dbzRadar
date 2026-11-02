@@ -11,24 +11,28 @@ import { computed } from 'vue';
 import {
   appState,
   activeScreen,
+  getProductByIdSafe,
   setScreenProduct,
   setActiveScreen
 } from '../store/appStore';
+// 时间短文本统一走 utils/datetime，禁止在组件里手写 replace/slice
+import { formatShortTime } from '../utils/datetime';
 
 /** 激活屏当前的产品代码（用于高亮）；统一从 activeScreen 取，不直接索引数组 */
 const activeProductId = computed(() => activeScreen.value?.productId ?? '');
 
-/** 时间格式化：'2022-06-19T00:00:43' → '06-19 00:00' */
-function fmt(t: string): string {
-  return t ? t.replace('T', ' ').slice(5, 16) : '--';
-}
+/** 激活屏的展示序号（按数组位置，不假设 id === 下标） */
+const activeScreenIndex = computed(() => {
+  const i = appState.screens.findIndex((s) => s.id === appState.activeScreenId);
+  return i >= 0 ? i + 1 : 1;
+});
 </script>
 
 <template>
   <aside class="product-panel">
     <div class="panel-title">
       产品列表
-      <span class="panel-sub">作用于第 {{ appState.activeScreenId + 1 }} 屏</span>
+      <span class="panel-sub">作用于第 {{ activeScreenIndex }} 屏</span>
     </div>
 
     <!-- 产品按钮列表 -->
@@ -59,15 +63,15 @@ function fmt(t: string): string {
     <div class="screen-overview">
       <div class="panel-title">各屏状态</div>
       <button
-        v-for="s in appState.screens"
+        v-for="(s, i) in appState.screens"
         :key="s.id"
         class="screen-card"
         :class="{ 'item-active': s.id === appState.activeScreenId }"
         @click="setActiveScreen(s.id)"
       >
-        第 {{ s.id + 1 }} 屏 ·
-        {{ appState.products.find((p) => p.id === s.productId)?.name ?? s.productId }}
-        <span class="screen-time">{{ fmt(s.time) }}</span>
+        第 {{ i + 1 }} 屏 ·
+        {{ getProductByIdSafe(s.productId).name }}
+        <span class="screen-time">{{ formatShortTime(s.time) }}</span>
       </button>
     </div>
   </aside>

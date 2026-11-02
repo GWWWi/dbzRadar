@@ -23,7 +23,7 @@ import {
   setTimeline
 } from '../store/appStore';
 import { buildTimelineTimes } from '../api/configApi';
-import { compact12ToISO, isoToCompact, isoToMs } from '../utils/datetime';
+import { compact12ToISO, formatShortTime, isoToCompact, isoToMs } from '../utils/datetime';
 import TimeAxis from './TimeAxis.vue';
 
 /** 当前激活屏时刻在时间轴上的索引（决定步进位置） */
@@ -71,9 +71,6 @@ watch(
   },
   { immediate: true }
 );
-
-/** 时间格式化：'2022-06-19T00:00:43' → '06-19 00:00:43' */
-const fmt = (t?: string) => (t ? t.replace('T', ' ').slice(5, 19) : '--');
 
 /**
  * 跳转时间控件绑定值（紧凑串 YYYYMMDDHHmm，随激活屏时刻同步）。
@@ -166,7 +163,7 @@ defineExpose({ step });
       @change="onSelectTime"
     />
 
-    <span class="timeline-time">{{ fmt(activeScreen?.time) }}</span>
+    <span class="timeline-time">{{ formatShortTime(activeScreen?.time ?? '', true) }}</span>
     <span class="timeline-count">{{ currentIndex + 1 }} / {{ timelineTimes.length }} 时次</span>
   </footer>
 </template>

@@ -4,14 +4,15 @@
 - 技术栈：Vite 5 + TypeScript 5.4 + Vue 3.4（script setup）+ QuickEarth 3.2.2（@quickearth/core、@quickearth/leaflet，LMap 继承自 Leaflet L.Map）+ Leaflet 1.9.4
 - 目录结构：
   - `src/parse/`：解析层，把二进制/文本解析为统一网格结构 RadarGrid（mosaic / rstm / m4 三种格式）
-  - `src/api/`：接口层，产品列表与雷达文件清单、取数
+  - `src/api/`：接口层；radarApi 为对外门面，radarManifest（清单发现/路径）、radarSource（下载/解压/解析）、radarCache（SharedTask + LruCache）为内部拆分
   - `src/render/`：渲染层，`radarRenderer.ts` 把 RadarGrid 渲染为 LPixelLayer 色斑图（bitmap 格点填色 / pixel1 平滑，支持色标范围裁剪）；`mapManager.ts` 创建地图、切换底图（天地图行政 / 国界矢量）、多屏视野联动
   - `src/mapBorder/`：国界底图 GeoJSON（worldGJ 179 国 / chinaGJ 全国 / chinaSJ 42 省，合计约 4MB，`?url` 按需加载）
   - `src/utils/`：datetime（时间）、http（超时 fetch）、range（色标范围换算）
   - `src/store/appStore.ts`：Vue reactive 单例全局状态（多屏 / 产品 / 时间 / 播放）
   - `src/config/products.ts`：内置产品目录（8 个产品：dBZ/dBT/V/W/ZDR/CC/KDP/SNRH，id 即 RSTM 字段名，各配专用色标）
-  - `src/components/`：Toolbar / ProductList / Timeline / RadarScreen（单屏容器）/ Legend
-  - `src/utils/datetime.ts`：时间格式转换唯一实现（ISO / 紧凑串 / 显示文本）
+  - `src/composables/`：useRadarScreen（单屏地图/取数/图层状态机/取样/上传）
+  - `src/components/`：Toolbar / ProductList / Timeline / RadarScreen（薄壳）/ ScreenHeader / CoordinateQuery / Legend
+  - `src/utils/datetime.ts`：时间格式转换唯一实现（ISO / 紧凑串 / 显示文本 / formatShortTime）
   - `src/utils/http.ts`：带超时的 fetch 封装（所有网络请求统一入口）
   - `src/utils/range.ts`：色标数值范围判断与档位↔数值换算（渲染 / 取值 / 图例共用）
   - `src/constants.ts`：跨层共享常量（统一缺测哨兵 `UNDEF`）
@@ -19,6 +20,40 @@
 - 数据契约：`src/types/index.ts` 中 RadarGrid —— x 经度/y 纬度，data 行优先一维数组，yDelta<0 表示第 0 行在最北；undef 为缺测哨兵值
 
 # 迭代变更日志（按时间倒序）
+
+【2026-11-02 本轮改动（P1 结构拆分：radarApi 分层 / RadarScreen 组合化 / 时间格式化）】
+
+1. 修改文件：`src/api/radarApi.ts`（收敛为门面）、`src/api/radarCache.ts`（新增）、
+   `src/api/radarManifest.ts`（新增）、`src/api/radarSource.ts`（新增）、
+   `src/composables/useRadarScreen.ts`（新增）、`src/components/RadarScreen.vue`（薄壳）、
+   `src/components/ScreenHeader.vue`（新增）、`src/components/CoordinateQuery.vue`（新增）、
+   `src/components/ProductList.vue`、`src/components/Timeline.vue`、`src/types/index.ts`、
+   `src/utils/datetime.ts`、`src/api/radarCache.test.ts`（新增）、`AGENTS.md`、`CLAUDE.md`
+
+2. 修改目的：把两个超大文件拆成职责单一的小模块，行为保持不变：
+   - `radarApi.ts`（原 800+ 行）拆为“门面 + 清单发现 + 下载解析 + 缓存/共享任务”；
+   - `RadarScreen.vue`（原 750 行）拆为“薄壳 + 地图/图层 composable + 屏头 + 坐标查询面板”；
+   - 顺手统一时间短文本、显示序号与稳定 id 解耦。
+
+3. 关键规则沉淀：
+   - `radarApi` 继续 re-export `fetchRadarFileList` / `buildFileMetaFromTemplate` / `parseUploadedFile` /
+     `RadarFileMissingError`，调用方 import 路径不变；内部依赖方向为
+     radarApi → radarSource/radarManifest/radarCache，radarSource → radarManifest/radarCache。
+   - `SharedTask` + `LruCache` 移到 `radarCache.ts`：网格/体数据缓存共用同一套“条数 + 字节”淘汰；
+     体数据失败 buffer 暂存移到 `radarSource.ts`，负缓存仍留在 radarApi 的取数编排里。
+   - `useRadarScreen` 集中保存 8 个图层状态变量、refreshToken/inflight、fitToGrid、取样与上传；
+     RadarScreen 只组合子组件，禁止再把地图/图层逻辑写回模板组件。
+   - `CoordinateQuery` 通过 `sample(lat, lon, notify)` 回调注入取样，不持有地图/图层；
+     地图弹窗与面板结果共用同一次取样（保证“面板数值 = 图上弹窗”）。
+   - `RadarQueryResult` 移入 types/index.ts；时间短文本统一 `formatShortTime`，
+     ProductList / Timeline / ScreenHeader 不再手写 `replace('T',' ').slice()`。
+   - 展示序号与稳定 id 解耦：ScreenHeader / ProductList 用数组位置 +1，不再假设 `id === 下标`；
+     产品名统一 `getProductByIdSafe`（服务器目录未落库时也能回退静态目录）。
+
+4. 验证方式：`npx vue-tsc --noEmit -p tsconfig.json` 通过；`npm test` 6 个文件 34 个用例全通过
+   （新增 radarCache 的 5 个 LRU 用例）；`npm run build` 成功，产物 `dist/assets/index-BlbOCqUK.js`
+   1,616.54 kB（gzip 473.08 kB）、CSS 386.84 kB（gzip 57.31 kB）。
+   本轮只做结构迁移，未改渲染/解析算法；手工回归重点仍是多屏播放、切产品/平滑、坐标查询、上传。
 
 【2026-11-02 本轮改动（P0 稳定性：取数并发 / 缓存 / 时区 / 播放状态 + Vitest）】
 

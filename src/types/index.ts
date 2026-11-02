@@ -69,6 +69,27 @@ export interface ValueRange {
 }
 
 /**
+ * 坐标查询面板的单次结果（父组件取样后交给 CoordinateQuery 展示）。
+ * 地图弹窗与面板共用同一次取样，保证“面板数值 = 图上弹窗”。
+ */
+export interface RadarQueryResult {
+  lat: number;
+  lon: number;
+  /** 中心库的原始值（最近邻，与图上颜色同口径） */
+  center: number | null;
+  /** 3×3 九点均值；无 RSTM 数据或有效库不足时为 null */
+  mean: number | null;
+  /** 参与平均的有效库数 */
+  validCount: number;
+  /** 邻域内被检查的库数（边界处可能 < 9） */
+  totalCount: number;
+  /** 单位（dBZ / m/s / dB …） */
+  unit: string;
+  /** 说明：低于阈值 / 超出范围 / 无数据 */
+  note: string;
+}
+
+/**
  * 雷达文件的数据格式：
  *   - 'mosaic'：SWAN 雷达三维拼图（Z_OTHE_RADAMOSAIC_*.bin，头部为 "diamond"）
  *   - 'rstm'  ：CINRAD 单站基数据 RSTM（Z_RADR_I_Z95xx_*.bin.bz2，魔数 "RSTM"）

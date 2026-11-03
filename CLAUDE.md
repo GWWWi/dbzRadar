@@ -3,9 +3,9 @@
 - 项目：二维雷达显示平台（radar2-2d-platform）
 - 技术栈：Vite 5 + TypeScript 5.4 + Vue 3.4（script setup）+ QuickEarth 3.2.2（@quickearth/core、@quickearth/leaflet，LMap 继承自 Leaflet L.Map）+ Leaflet 1.9.4
 - 目录结构：
-  - `src/parse/`：解析层，把二进制/文本解析为统一网格结构 RadarGrid（mosaic / rstm / m4 三种格式）
+  - `src/parse/`：解析层，把二进制/文本解析为统一网格结构 RadarGrid（mosaic / rstm / m4）；cinradVolume 为 RSTM 门面，rstmRadials（解析）/rstmPolar（取样）/rstmGrid（栅格化）为内部拆分
   - `src/api/`：接口层；radarApi 为对外门面，radarManifest（清单发现/路径）、radarSource（下载/解压/解析）、radarCache（SharedTask + LruCache）为内部拆分
-  - `src/render/`：渲染层，`radarRenderer.ts` 把 RadarGrid 渲染为 LPixelLayer 色斑图（bitmap 格点填色 / pixel1 平滑，支持色标范围裁剪）；`mapManager.ts` 创建地图、切换底图（天地图行政 / 国界矢量）、多屏视野联动
+  - `src/render/`：渲染层，`radarRenderer.ts` 把 RadarGrid 渲染为 LPixelLayer 色斑图（bitmap 格点填色 / pixel1 平滑，支持色标范围裁剪）；mapManager 为门面，mapFactory（建图）/baseMap（天地图/国界底图）/mapLink（多屏联动）为内部拆分
   - `src/mapBorder/`：国界底图 GeoJSON（worldGJ 179 国 / chinaGJ 全国 / chinaSJ 42 省，合计约 4MB，`?url` 按需加载）
   - `src/utils/`：datetime（时间）、http（超时 fetch）、range（色标范围换算）
   - `src/store/appStore.ts`：Vue reactive 单例全局状态（多屏 / 产品 / 时间 / 播放）
@@ -18,8 +18,46 @@
   - `src/constants.ts`：跨层共享常量（统一缺测哨兵 `UNDEF`）
 - 环境配置：`npm run dev`（scripts/dev.cjs，端口 5179）、`npm run build`；类型检查 `npx vue-tsc --noEmit`；单元测试 `npm test`（Vitest）
 - 数据契约：`src/types/index.ts` 中 RadarGrid —— x 经度/y 纬度，data 行优先一维数组，yDelta<0 表示第 0 行在最北；undef 为缺测哨兵值
+- 构建：`vite.config.ts` 的 `build.manualChunks` 将 vue / element-plus / quickearth 拆为独立 vendor chunk（总字节不变，改善缓存与并行加载）。
 
 # 迭代变更日志（按时间倒序）
+
+【2026-11-02 本轮改动（P2：mapManager / cinradVolume 拆分 + RSTM 解析优化 + vendor 分包）】
+
+1. 修改文件：`src/render/mapManager.ts`（收敛为门面）、`src/render/mapFactory.ts`（新增）、
+   `src/render/baseMap.ts`（新增）、`src/render/mapLink.ts`（新增）、
+   `src/parse/cinradVolume.ts`（收敛为门面）、`src/parse/rstmRadials.ts`（新增）、
+   `src/parse/rstmPolar.ts`（新增）、`src/parse/rstmGrid.ts`（新增）、
+   `src/parse/rstmPolar.test.ts` / `src/parse/rstmGrid.test.ts`（新增）、
+   `vite.config.ts`、`AGENTS.md`、`CLAUDE.md`
+
+2. 修改目的：继续收敛超大文件，并处理 RSTM 解析/栅格化的低风险热点：
+   - `mapManager.ts`（原 398 行）拆为建图 / 底图 / 联动；
+   - `cinradVolume.ts`（原 937 行）拆为解析 / 极坐标取样 / 栅格化；
+   - 解析阶段减少临时对象分配，栅格化结果支持多屏复用；
+   - 构建产物做 vendor 分包，改善浏览器缓存。
+
+3. 关键规则沉淀：
+   - mapManager 继续 re-export 原有 API；`unregisterMapLink` 门面同时做“解除联动 + cleanupBaseMap”，
+     mapLink 只管理连接表，不 import baseMap，避免循环依赖。
+   - cinradVolume 继续 re-export 原有 API；调用方 import 路径不变。依赖方向：
+     cinradVolume → rstmRadials/rstmPolar/rstmGrid；rstmGrid → rstmPolar/rstmRadials。
+   - RSTM 解析性能：整个文件只建一个 DataView；8 位矩用 Uint8Array；空字段共享零长数组；
+     矩类型→字段名用预建反向表（旧实现每次 new DataView / 每条径向 9 个空数组 / 每矩线性查找）。
+   - `volumeToGrid` 用 `WeakMap<volume, {key, grid}>` 只缓存最近一次（约 3MB/volume），
+     多屏同层同字段直接复用；返回的 grid 只读，禁止改 data/time。
+   - 地面距离→斜距改为按仰角缓存的 100m 步长 LUT（`groundToSlantFast`），
+     单点从 24 次三角/开方降为一次二分+插值；测试保证与二分实现误差 <1m。
+   - `vite.config.ts` manualChunks：vue / element-plus / quickearth 独立 chunk；
+     只改变切分，不减少首屏总字节。
+
+4. 验证方式：`npx vue-tsc --noEmit -p tsconfig.json` 通过；`npm test` 8 个文件 41 个用例全通过
+   （新增 rstmPolar 的斜距/极坐标往返、rstmGrid 的栅格化/缓存/LUT 精度用例）；`npm run build` 成功，
+   产物拆为 `vue-CqWsrJRt.js` 70.01 kB、`index-CNeZ6BGI.js` 96.59 kB、
+   `element-plus-9k96HH6D.js` 936.20 kB、`quickearth-DwTJjkYN.js` 1,042.30 kB，CSS 386.84 kB。
+   ⚠ 未用真实 RSTM 文件做端到端基准（本机 `public/data` 无雷达文件）；本轮性能改动为结构性/微观优化，
+   实际收益需在现场数据上复测。
+
 
 【2026-11-02 本轮改动（P1 结构拆分：radarApi 分层 / RadarScreen 组合化 / 时间格式化）】
 

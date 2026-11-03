@@ -41,6 +41,17 @@ export default defineConfig({
   build: {
     outDir: 'dist',
     // 单文件超过 1500KB 时不再警告（雷达数据体量较大）
-    chunkSizeWarningLimit: 4096
+    chunkSizeWarningLimit: 4096,
+    rollupOptions: {
+      output: {
+        // vendor 分包：业务代码改动时 vue / element-plus / QE 仍可命中浏览器缓存。
+        // 只改变文件切分，不改变首屏总字节数。
+        manualChunks: {
+          vue: ['vue'],
+          'element-plus': ['element-plus'],
+          quickearth: ['@quickearth/core', '@quickearth/leaflet']
+        }
+      }
+    }
   }
 });

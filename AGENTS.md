@@ -18,10 +18,10 @@
 | QE 地图类 | `LMap extends Leaflet L.Map`——Leaflet 的 on/popup/layer API 全部可用 |
 | QE 初始化 | `src/main.ts`：先设 `consts.wasmPath='/libs/wasm'`、`workerPath='/libs/workers'`，再 `qeInit(undefined, true)` 免费二维模式 |
 | dev | `npm run dev`（scripts/dev.cjs，端口 5179，strictPort，`host: true` 监听所有网卡 → 可经本机 IP 局域网访问），mode=development → 读 `.env.development`；`/radar-data` 代理到 `http://localhost:9099/data/radarData` |
-| build | `npm run build`（scripts/build.cjs），mode=production → 读 `.env.production` |
+| build | `npm run build`（scripts/build.cjs），mode=production → 读 `.env.production`；`vite.config.ts` 的 manualChunks 将 vue / element-plus / quickearth 拆为独立 vendor chunk |
 | 环境变量 | `.env.development` / `.env.production`（仓库提交）+ `.env.example`（模板）；变量 `VITE_DATA_BASE_URL` / `VITE_TILE_SERVICE_BASE` / `VITE_TIANDITU_KEY`，类型见 `src/types/env.d.ts`；**构建时内联**，改完必须重新 dev/build，不能只改服务器上的文件 |
 | 类型检查 | `npx vue-tsc --noEmit -p tsconfig.json` |
-| 单元测试 | `npm test`（Vitest 1.6；覆盖 datetime/range/configApi/appStore 与取数并发） |
+| 单元测试 | `npm test`（Vitest 1.6；覆盖 datetime/range/configApi/appStore、radarCache/取数并发、rstmPolar/rstmGrid） |
 | 部署 | `docs/DEPLOY_GUIDE.md`（现场实测值/目录与端口清单/nginx 说明/发布与验收步骤/待决项） |
 | 用户手册 | `docs/USER_GUIDE.md`（面向值班/业务使用者：界面、状态文案含义、读图口径、FAQ） |
 
@@ -34,7 +34,7 @@ index.html                     单页入口 #app
 .env.example                   变量模板（清单/含义/读取位置）；现场覆盖用 .env.*.local（已 gitignore）
 docs/DEPLOY_GUIDE.md            ★ 部署运行手册（基于现网实测，改环境/改 nginx 前先查它）
 docs/USER_GUIDE.md              ★ 用户使用手册（面向操作人员，写 UI 行为与读图口径）
-vite.config.ts                 public/ 原样拷贝：/libs/*（QE wasm/workers）、/data/*（雷达数据）
+vite.config.ts                 public/ 原样拷贝 + build.manualChunks（vue/element-plus/quickearth vendor 分包）
 scripts/
   dev.cjs / build.cjs          启动/构建脚本（Node >=18）
   prepare-data.cjs             npm run prepare:data：bz2→bin 预解压 + 生成 manifest.json
@@ -64,9 +64,15 @@ src/
   api/radarSource.ts           下载 + bz2 解压 + 魔数识别 + loadGrid/loadVolume/parseUploadedFile + 失败 buffer 复用
   parse/mosaicParser.ts        SWAN 拼图 "diamond" 头：isRADAMOSAIC()/parseRADAMOSAIC()
   parse/cinradParser.ts        CINRAD 单站 RSTM："RSTM" 魔数：parseRSTM()（体数据不可解码，恒为合成团块；isSynthetic 恒 true，头部只提供站点定位）；导出 tryParseHeader 供 cinradVolume 复用
-  parse/cinradVolume.ts        ★ RSTM 标准格式（CINRAD V2）解析：parseRstmVolume（11 cut → 9 仰角 × 360 方位 × 9 矩 dBT/dBZ/V/W/ZDR/CC/ΦDP/KDP/SNRH）/sampleRstmValue/latLonToPolar/volumeToGrid
+  parse/cinradVolume.ts        RSTM 对外门面：re-export parseRstmVolume/sampleRstmValue/latLonToPolar/volumeToGrid 等（原有 import 路径不变）
+  parse/rstmRadials.ts         二进制头/cut/径向/矩解析（一个 DataView、8 位矩用 Uint8Array、字段反向表、空字段共享）
+  parse/rstmPolar.ts           经纬度↔极坐标、地面↔斜距、最近邻/九点取样、findNearestRadialIndex
+  parse/rstmGrid.ts            极坐标→0.01° 网格；地面→斜距 LUT（groundToSlantFast）；单条 WeakMap 缓存（多屏同层同字段复用）
   parse/micapsM4Parser.ts      MICAPS 第4类文本：isMicapsM4()/parseMicapsM4()
-  render/mapManager.ts         createRadarMap(el)/applyBaseMap(map,mode)/applyBaseMapToAll(mode)（admin=天地图 vec_w+cva_w，地址由 TILE_SERVICE_BASE 决定：内网 WMTS 或公网 DataServer；border=国界矢量：陆地 #efefdb、海洋 #97b6e1、界线 #606266，世界/中国 1px、省界 0.8px，按需加载 mapBorder 三份 GeoJSON）/setMapLink/registerMapLink/unregisterMapLink（多屏联动，move 经 rAF 合并）
+  render/mapManager.ts         地图能力门面：re-export createRadarMap/applyBaseMap 等；applyBaseMapToAll 与 unregisterMapLink（联动 + 底图清理）
+  render/mapFactory.ts         createRadarMap（QE LMap + 版权条清理）
+  render/baseMap.ts            天地图/国界底图（admin/border，地址由 TILE_SERVICE_BASE 决定；border 配色陆地 #efefdb、海洋 #97b6e1、界线 #606266）、边界数据缓存、切换 token、cleanupBaseMap
+  render/mapLink.ts            多屏联动（move 经 rAF 合并）；只管理连接表，不碰底图
   render/radarRenderer.ts      ★ 核心：renderRadar(smooth,range)/updateRadarProduct/updateRadarSmooth/updateRadarRange/removeRadar/sampleGridValue/firstVisibleThreshold
   store/appStore.ts            Vue reactive 单例全局状态 + mutations（setLayout/setScreenProduct/setScreenSmooth/setScreenRange/setScreenElevations/setScreenElevation/setScreenTime/setFiles/setProducts/setPlaying/setSyncPlay/setSyncMap/setBaseMap/setActiveScreen/setScreenStatus/setScreenLoading/setTimeline(times,template)/setTimelineConfig/getProductByIdSafe）+ 状态 timeline/fileUrlTemplate/timelineConfig + computed（activeScreen/timelineTimes）；ScreenState.smooth / valueRange / elevations+elevationIndex 每屏独立，loading 为播放避让的忙标记
   composables/useRadarScreen.ts ★ 单屏地图/取数/图层状态机：建图销毁、watch 刷新、局部更新、取值、上传
@@ -187,6 +193,11 @@ renderRadar **不修改 grid.data**：渲染数据源内部使用“按当前阈
     当二进制解→合成兜底→屏头显示“示意数据”假回波，错得静默、极难发现。
     另：`/data` 前缀被 nginx 接管后，`dist/data/`（示例 config/products/manifest）在站点上
     就访问不到了，这些文件要么放数据目录，要么用绝对路径重新映射。
+21. **volumeToGrid 结果只读且按 volume 单条缓存**：多屏共享同一 `RadarGrid`，
+    禁止修改 `grid.data`/`time`；缓存键为“层索引|字段”，切换层/字段会重算。
+22. **RSTM 栅格化的地面→斜距换算走 LUT**：`rstmGrid.groundToSlantFast` 按仰角（0.01° 取整）
+    缓存 100m 步长查找表；与 `groundToSlantRange` 误差 <1m（rstmGrid.test 保证）。
+    修改步长/最大距离必须同步更新测试，否则会产生“图上颜色与点击取值错库”。
 
 ## 7. 分层规则与编码规范
 

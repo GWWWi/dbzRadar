@@ -33,8 +33,13 @@ const currentIndex = computed(() => {
   return idx >= 0 ? idx : 0;
 });
 
-/** 有文件的时次（刻度轴顶条绿色标记）；模板模式无法预知，为空数组 */
-const fileTimes = computed(() => appState.files.map((f) => f.time));
+/** 有文件的时次（刻度轴顶条绿色标记）：服务器清单 + 本地文件夹文件，去重升序 */
+const fileTimes = computed(() => {
+  const set = new Set<string>();
+  for (const f of appState.files) if (f.time) set.add(f.time);
+  for (const t of appState.localFileTimes) if (t) set.add(t);
+  return Array.from(set).sort();
+});
 
 /** 刻度轴拖拽/点击 → 设置激活屏时刻（syncPlay 时广播全屏） */
 function onAxisChange(time: string): void {

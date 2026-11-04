@@ -22,6 +22,201 @@
 
 # 迭代变更日志（按时间倒序）
 
+【2026-11-04 本轮改动（仅上传模式隐藏时间轴与播放）】
+
+1. 修改文件：`src/App.vue`、`src/components/Toolbar.vue`、`public/data/dataSourceMode.md`
+
+2. 修改目的：`dataSourceMode=upload`（只通过上传文件）时界面不显示底部时间轴；
+   播放按钮（按时间推进时次）随之隐藏，避免播放反复推进时次把上传画面清空。
+
+3. 关键规则沉淀：
+   - 时间轴 / 播放属于“时间切换”能力，与 upload 模式（无服务器数据、无时次切换入口）互斥：
+     统一用 `appState.dataSourceMode !== 'upload'` 控制显隐（只在 UI 层判断，store 不改）。
+   - upload 模式内部仍保留 `config.timeline` 生成的当前时次（用于绑定上传数据与屏头时间），
+     只是不渲染 Timeline 组件，不影响上传后的切产品 / 切仰角局部刷新。
+   - 同步更新 `public/data/dataSourceMode.md`：upload 模式“不显示时间轴”，
+     常见问题表移除“切时次空白”，改为“看不到时间轴 / 播放按钮”。
+
+4. 验证方式：`npx vue-tsc --noEmit -p tsconfig.json` 通过；`npm test` 10 文件 73 用例全通过。
+
+【2026-11-04 本轮改动（本地文件夹文件接入时间轴）】
+
+1. 修改文件：`src/api/localFiles.ts`（新增）、`src/api/radarManifest.ts`（导出 buildMetaFromFileName）、
+   `src/store/appStore.ts`、`src/components/Timeline.vue`、`src/components/FolderFiles.vue`、
+   `src/composables/useRadarScreen.ts`
+
+2. 修改目的：选择文件夹后时间轴没有显示这些文件的时次——文件夹文件此前只列在侧栏，
+   未登记为可用时次，时间轴（绿色刻度）与取数都看不到它们。
+
+3. 关键规则沉淀：
+   - 本地文件夹文件单独放 `api/localFiles.ts` + `store.localFileTimes`，**不合并进 `appState.files`**：
+     files 会被 refresh 当成 URL 去 fetch，而本地文件没有可请求地址。
+   - `timelineTimes` 合并本地时次（排序去重），使时间轴能吸附 / 步进到这些不在配置栅格上的时刻；
+     `Timeline.fileTimes`（绿色刻度）同样合并 files + localFileTimes。
+   - refresh 取数分支顺序：**本地文件（getLocalFile(time)）优先 → upload 模式短路 → 服务器取数**；
+     本地文件用 `parseUploadedFile` 解析（自然支持 bz2 / RSTM 体数据仰角）。
+   - 上传与本地文件共用 `applyParsedData`（体数据仰角 / 单层网格 / 色标范围 / 定位 / 状态文案），
+     避免两条来源行为分叉。
+   - 本地文件时次由文件名 14 位时刻解析（复用 `radarManifest.buildMetaFromFileName`）；
+     无时刻的文件不进入时间轴，但仍可在列表里点击上传。
+
+4. 验证方式：`npx vue-tsc --noEmit -p tsconfig.json` 通过；`npm test` 10 文件 73 用例全通过。
+   ⚠ 需浏览器选择真实文件夹确认时间轴刻度与跳转加载（纯 UI 交互，无单测覆盖）。
+
+【2026-11-04 本轮改动（补充：数据来源模式说明文档）】
+
+1. 修改文件：`public/data/dataSourceMode.md`（新增）
+
+2. 修改目的：把 dataSourceMode 三种模式（latest / upload / both）的行为差异、配置示例、
+   注意事项与常见问题整理成文档，随 public/data 原样拷贝到 dist/data，现场可直接查阅。
+
+3. 关键规则沉淀：
+   - 文档放在 `public/data/` 而非 docs/：与 config.json / config.example.json 同目录，
+     部署时随构建产物一起到达数据目录，便于运维对照配置排查。
+   - 文档内容必须与 `App.vue` 初始化分支、`useRadarScreen.refresh` 的 upload 短路保持一致；
+     后续改动这三种模式的行为时要同步更新该文档。
+
+4. 验证方式：静态说明文档，无代码变更；`npx vue-tsc` / `npm test` 不受影响。
+
+【2026-11-04 本轮改动（新增数据来源模式配置 dataSourceMode）】
+
+1. 修改文件：`src/types/index.ts`、`src/api/configApi.ts`、`src/store/appStore.ts`、`src/App.vue`、
+   `src/composables/useRadarScreen.ts`、`public/data/config.example.json`
+
+2. 修改目的：config.json 新增 `dataSourceMode` 控制数据来源：
+   - `latest`：只通过最新数据接口获取（查最新时间定位最新文件，不加载文件清单；上传保留）
+   - `upload`：只通过上传文件（时间轴按配置生成，不查最新时间、不加载清单、不取服务器数据）
+   - `both`  ：两者同时存在（清单 / 模板 / 最新时间 + 上传），默认
+
+3. 关键规则沉淀：
+   - `AppConfig.dataSourceMode` 为**可选**字段，缺省 / 非法值一律按 `both`，保证无配置部署行为完全不变。
+   - App 初始化按 mode 分支：both 无模板才加载清单；latest 不加载清单（需配 `fileUrlTemplate`，
+     否则 warn 且无数据可显示）；upload 不查最新时间（不自动跳时次，地图空白等待上传）。
+   - refresh 取数分支前增加 upload 短路：首次 / 切时次的取数请求一律不发服务器，改为清空画面；
+     上传后同屏切产品 / 仰角仍走局部更新（`layerTime === sc.time`），不受影响。
+   - 上传入口在三种模式下**均保留**（latest / upload 都要能上传），UI 不按 mode 隐藏任何按钮。
+   - upload 模式时间轴保留（按 config.timeline 生成），切时次地图空白（只有上传的那个时次有画面）。
+
+4. 验证方式：`npx vue-tsc --noEmit -p tsconfig.json` 通过；`npm test` 10 文件 73 用例全通过。
+   ⚠ 三种模式的端到端行为需在浏览器配合对应 config.json 人工确认（配置 + 状态机，无单测覆盖）。
+
+   config.json 示例：`{ "dataSourceMode": "latest | upload | both", ... }`（缺省 both）
+
+【2026-11-04 本轮改动（体数据切换产品重新栅格化）】
+
+1. 修改文件：`src/composables/useRadarScreen.ts`
+
+2. 修改目的：上传 / 取数的 RSTM 体数据切换产品（字段）时无变化或配色错乱——
+   原局部更新分支只调用 updateRadarProduct 换色标，未按新字段重新栅格化。
+
+3. 关键规则沉淀：
+   - 体数据下「仰角层 + 字段」共同决定栅格内容：refresh 局部更新分支把
+     `layerElevation !== sc.elevationIndex || layerProductId !== product.id` 合并为同一条件，
+     统一 `volumeToGrid(currentVolume, elevationIndex, fieldForProduct(productId))` 重建图层。
+   - 重建后必须同步 layerProductId / layerThreshold / layerSmooth / layerRange，
+     否则后续判重会以旧口径误跳过或误重绘。
+   - 非体数据（拼图 / m4 / 单层）切产品仍走 updateRadarProduct 换色标（无多字段可栅格化）。
+   - 该分支被服务器取数与上传数据共用，服务器链路切产品同样获得修复。
+
+4. 验证方式：`npx vue-tsc --noEmit -p tsconfig.json` 通过；`npm test` 10 文件 73 用例全通过。
+   ⚠ 需浏览器用真实 RSTM 文件确认 dBZ / V / W 等产品切换的画面变化。
+
+【2026-11-04 本轮改动（修复上传数据切仰角无响应 + 屏头显示上传文件名）】
+
+1. 修改文件：`src/composables/useRadarScreen.ts`、`src/components/ScreenHeader.vue`、`src/styles.css`
+
+2. 修改目的：
+   - 修复上传数据后切换仰角无响应：refresh 的“完全没变化”判重漏了仰角字段；
+   - 修复上传数据被服务器文件清单误判为“该时次无数据”；
+   - 屏头状态显示上传文件名，便于多屏 / 多文件区分数据来源。
+
+3. 关键规则沉淀：
+   - refresh 判重必须包含仰角，且只在体数据下参与比较
+     （`!currentVolume || layerElevation === sc.elevationIndex`）：
+     非体数据 layerElevation 恒为 -1，无条件比较会永远判“有变化”而白走局部更新；
+     漏比较则切仰角会被判重直接跳过（现象即“切换仰角无响应”）。
+   - 局部更新分支（`layer && layerGrid && layerTime === sc.time`）必须排在文件清单解析之前：
+     上传数据的文件不在数据服务清单里，先查清单会在清单模式下 clearLayer + “该时次无数据”，
+     表现为切仰角画面被清空 / 无响应。只有需要重新取数的分支才解析 file。
+   - 上传状态文案统一为 `上传数据 · <文件名>`；屏头 `.screen-status` 限制 max-width 40% + 省略号，
+     并用 title 显示完整文件名（长文件名不挤压仰角 / 平滑 / 上传控件）。
+
+4. 验证方式：`npx vue-tsc --noEmit -p tsconfig.json` 通过；`npm test` 10 文件 73 用例全通过。
+   ⚠ 交互行为（上传后切仰角重绘、文件名显示）需在浏览器用真实 RSTM 文件人工确认（纯 UI 状态机，无单测覆盖）。
+
+【2026-11-04 本轮改动（上传数据支持仰角选择）】
+
+1. 修改文件：`src/api/radarSource.ts`、`src/composables/useRadarScreen.ts`
+
+2. 修改目的：上传的 RSTM 基数据体文件也能像服务器取数一样出现仰角选择器（9 仰角层可切换），
+   而不是被降级为单层合成网格。
+
+3. 关键规则沉淀：
+   - parseUploadedFile 返回值改为判别联合 UploadedRadarData：
+     kind='volume'（RSTM 标准体数据，栅格化由调用方 volumeToGrid 按当前产品字段/仰角执行）/
+     kind='grid'（拼图/m4/合成 RSTM 单层网格）。RSTM 魔数优先尝试 parseRstmVolume，
+     结构校验失败回退单层合成兜底（原行为不变）。
+   - onUpload 里层号需自行钳制到体数据实际层数（volumeToGrid 内部虽钳制但不回传实际层号，
+     layerElevation 必须与 store 钳制后的 elevationIndex 一致，否则后续仰角切换会走错分支）。
+   - 当前层无有效数据时回退最低仰角层，仍无数据抛错走上传失败提示。
+   - TS 踩坑：`a ?? b`（b 可能为 null）直接赋给非空类型变量会在赋值语句处报错，
+     后置 `if (!x) throw` 无法收窄赋值表达式类型——先落局部常量再判空。
+
+4. 验证方式：`npx vue-tsc --noEmit -p tsconfig.json` 通过；`npm test` 10 文件 73 用例全通过。
+
+【2026-11-04 本轮改动（P0-1 解析补测试 + P0-2 取值逻辑抽纯函数）】
+
+1. 修改文件：`src/parse/rstmRadials.test.ts`（新建）、`src/parse/valueQuery.ts`（新建）、`src/parse/valueQuery.test.ts`（新建）、`src/utils/gridSample.ts`（新建）、`src/render/radarRenderer.ts`、`src/composables/useRadarScreen.ts`、`AGENTS.md`
+
+2. 修改目的：重构评估的 P0 两项 —— ① 补上 RSTM 二进制解析核心的测试（此前无覆盖）；② 把取值逻辑从 composable 抽出为纯函数并消除类型断言。
+
+3. 关键规则沉淀：
+   - **`rstmRadials.test.ts`（20 个用例）用“手工构造最小 RSTM 缓冲”而非 4.9MB 真实样本**：`buildBuffer(cuts, radials)` 只写解析器实际读取的偏移，覆盖魔数/版本/cut 数/库长校验、`(code-offset)/scale` 与 `code≤4` 缺测、8/16 位矩、dealias（折叠到 ±Nyquist）、长短圈按方位合并且**先到者优先**、Unix 时间换算、字段类型映射、方位升序
+   - ★ 断言精度陷阱 ★ 字段是 `Float32Array`（约 7 位有效数字），`toBeCloseTo(..., 6)` 会因 1.5e-6 的误差失败，必须用 `..., 4`
+   - ★ 网格取值测试的坐标陷阱 ★ 把点放在两个格点正中（如 xStart=118.825、点 118.83）时，浮点误差会让 `Math.round(0.5)` 落到 0 或 1 不确定；测试夹具必须让点**正好落在格点**上（xStart=118.82）
+   - 取值逻辑下沉三层：`utils/gridSample.ts`（网格最近邻，纯函数，radarRenderer re-export 保持兼容）→ `parse/valueQuery.ts`（fieldForProduct/rawValueAt/queryValue）→ `useRadarScreen.showValueAt` 只剩弹窗与 ElMessage
+   - `queryValue` 返回 `{...RadarQueryResult, visible, shown}`；`center`/`mean` 用 **`== null` 判断而不是 `!mean`**（九点均值恰为 0 时不能被误判成“无数据”，已加回归用例）
+   - `RstmSample` 的字段名与 `RstmField` 一一对应，可直接 `sample[field]` 索引 —— 原来为绕过类型用了 `as unknown as Record`，属可消除的坏味道（`map as unknown as L.Map` 是 Leaflet 类型摩擦，保留）
+   - 成果：`useRadarScreen` 431 → 404 行（取值逻辑整体移出）；测试 41 → **73 个（10 文件）**全绿；`vue-tsc` 通过
+
+【2026-11-04 本轮改动（补充：上传/文件夹支持 .bz2 压缩文件）】
+
+1. 修改文件：`src/api/radarSource.ts`、`src/components/FolderFiles.vue`、`src/components/ScreenHeader.vue`
+
+2. 修改目的：让「上传」与「文件夹文件」支持常见的 .bz2 压缩雷达数据（.bin.bz2 / .m4.bz2），
+   浏览器端用 seek-bzip 解压后再做格式识别。
+
+3. 关键规则沉淀：
+   - parseUploadedFile 改为按内容魔数 BZh（isBzip2Data）判断是否 bz2，解压后再走 m4/mosaic/RSTM 魔数识别；
+     不依赖扩展名，改名/无扩展名的 bz2 也能正确解压，非 bz2 文件行为不变。
+   - 文件体积上限 200MB 仍按压缩前 file.size 判定，与取数链路 fetchAndDecompress 一致（均不解压后体积）。
+   - FolderFiles 过滤与 ScreenHeader accept 同步加入 .bz2；.bin.bz2 的扩展名按 .bz2 匹配。
+
+4. 验证方式：`npx vue-tsc --noEmit -p tsconfig.json` 通过；解压复用既有 seek-bzip（utils/bzip2.ts），
+   无新增依赖。
+
+【2026-11-04 本轮改动（新增：选择本地文件夹并加载文件）】
+
+1. 修改文件：`src/composables/uploadRouter.ts`（新增）、`src/components/FolderFiles.vue`（新增）、
+   `src/composables/useRadarScreen.ts`、`src/App.vue`、`src/styles.css`
+
+2. 修改目的：新增「选择文件夹」功能——左侧侧栏新增「文件夹文件」区块，用户可选择一个本地目录，
+   列出其中的雷达数据文件（.bin / .m4），点击某文件即加载到当前激活屏解析渲染（复用现有上传链路）。
+
+3. 关键规则沉淀：
+   - 文件夹选择用 `<input type="file" webkitdirectory multiple>`（递归收集子目录文件），
+     不用 `window.showDirectoryPicker`：后者要求安全上下文（https/localhost），
+     现网经局域网 IP 以 http 访问时不可用；`webkitdirectory` 在普通 http 下也能用。
+   - 跨组件把文件路由到「激活屏」通过 `uploadRouter` 模块级处理器表实现：
+     每屏 useRadarScreen 挂载时 registerUploadHandler、卸载时 unregister；
+     侧栏按 appState.activeScreenId 查找调用。处理器表用普通 Map（不进 reactive）。
+   - 文件列表只收 `.bin/.m4`（与屏头上传 accept 一致，parseUploadedFile 仅支持这两种；
+     .bz2 上传暂不支持，与既有 upload 行为保持一致，不扩大范围）。
+   - File 对象内容延迟读取：webkitdirectory 只取文件元数据，点开时才 arrayBuffer()。
+
+4. 验证方式：`npx vue-tsc --noEmit -p tsconfig.json` 通过；新增为纯 UI 层，不影响既有
+   `npm test` 纯逻辑单测。
+
 【2026-11-02 本轮改动（P2：mapManager / cinradVolume 拆分 + RSTM 解析优化 + vendor 分包）】
 
 1. 修改文件：`src/render/mapManager.ts`（收敛为门面）、`src/render/mapFactory.ts`（新增）、

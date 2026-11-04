@@ -51,6 +51,7 @@ src/
   utils/datetime.ts            ★ 时间格式转换唯一实现：msToISO/msToText/formatShortTime/isoToMs/isoToCompact/compact12ToISO/digits14ToISO
   utils/http.ts                ★ fetchWithTimeout（默认 10s）+ FetchTimeoutError：所有网络请求统一走这里
   utils/range.ts               ★ 色标范围：isValueInRange/isValueVisible/valueRangeKey/rangeFromStopIndex/stopIndexFromRange（渲染、取值、图例共用同一口径）
+  utils/gridSample.ts          ★ 网格单点取值（纯函数）：sampleGridRaw（只判边界/缺测）/sampleGridValue（可见性口径）；radarRenderer 与 valueQuery 共用，避免两套口径漂移
   utils/bzip2.ts               ★ bzip2 解压（seek-bzip + buffer polyfill）：.bz2 雷达基数据在浏览器端解压
   types/index.ts               ★ 数据契约（唯一类型源）：ColorStop/RadarProduct/RadarProductType/RadarFileMeta/RadarGrid/RadarQueryResult/AppConfig/TimelineConfig
   types/env.d.ts               ImportMetaEnv 补充声明（VITE_ 变量全部可选，缺省走读取处兜底）
@@ -68,6 +69,8 @@ src/
   parse/rstmRadials.ts         二进制头/cut/径向/矩解析（一个 DataView、8 位矩用 Uint8Array、字段反向表、空字段共享）
   parse/rstmPolar.ts           经纬度↔极坐标、地面↔斜距、最近邻/九点取样、findNearestRadialIndex
   parse/rstmGrid.ts            极坐标→0.01° 网格；地面→斜距 LUT（groundToSlantFast）；单条 WeakMap 缓存（多屏同层同字段复用）
+  parse/valueQuery.ts          ★ 单点取值纯函数：fieldForProduct（产品→字段）/rawValueAt（原始值）/queryValue（原始值 + 九点均值 + 可见性与原因），UI 只负责弹窗
+  parse/rstmRadials.test.ts    ★ 二进制解析回归测试：手工构造最小 RSTM 缓冲，覆盖校验/解码/16 位/dealias/长短圈合并/时间
   parse/micapsM4Parser.ts      MICAPS 第4类文本：isMicapsM4()/parseMicapsM4()
   render/mapManager.ts         地图能力门面：re-export createRadarMap/applyBaseMap 等；applyBaseMapToAll 与 unregisterMapLink（联动 + 底图清理）
   render/mapFactory.ts         createRadarMap（QE LMap + 版权条清理）
@@ -75,7 +78,7 @@ src/
   render/mapLink.ts            多屏联动（move 经 rAF 合并）；只管理连接表，不碰底图
   render/radarRenderer.ts      ★ 核心：renderRadar(smooth,range)/updateRadarProduct/updateRadarSmooth/updateRadarRange/removeRadar/sampleGridValue/firstVisibleThreshold
   store/appStore.ts            Vue reactive 单例全局状态 + mutations（setLayout/setScreenProduct/setScreenSmooth/setScreenRange/setScreenElevations/setScreenElevation/setScreenTime/setFiles/setProducts/setPlaying/setSyncPlay/setSyncMap/setBaseMap/setActiveScreen/setScreenStatus/setScreenLoading/setTimeline(times,template)/setTimelineConfig/getProductByIdSafe）+ 状态 timeline/fileUrlTemplate/timelineConfig + computed（activeScreen/timelineTimes）；ScreenState.smooth / valueRange / elevations+elevationIndex 每屏独立，loading 为播放避让的忙标记
-  composables/useRadarScreen.ts ★ 单屏地图/取数/图层状态机：建图销毁、watch 刷新、局部更新、取值、上传
+  composables/useRadarScreen.ts ★ 单屏地图/取数/图层状态机：建图销毁、watch 刷新、局部更新、取值（调用 parse/valueQuery）、上传
   components/
     Toolbar.vue                布局切换(1/2/4/6屏)/同步开关/地图联动开关/播放按钮
     ProductList.vue            左侧产品列表（作用于激活屏）

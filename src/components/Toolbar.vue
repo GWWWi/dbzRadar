@@ -99,7 +99,12 @@ function onSelectBaseMap(mode: BaseMapMode): void {
         />
         地图联动
       </label>
-      <button class="btn" @click="setPlaying(!appState.playing)">
+      <!-- 仅上传模式没有时间轴，播放（按时间推进）无意义，一并隐藏 -->
+      <button
+        v-if="appState.dataSourceMode !== 'upload'"
+        class="btn"
+        @click="setPlaying(!appState.playing)"
+      >
         {{ appState.playing ? '⏸ 暂停' : '▶ 播放' }}
       </button>
     </div>

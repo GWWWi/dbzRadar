@@ -1,4 +1,5 @@
 {
+  "dataSourceMode": "upload",
   "fileUrlTemplate": "data/files/{time}.bin",
   "fileListUrl": "data/manifest.json",
   "timeline": {

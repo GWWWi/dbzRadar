@@ -17,6 +17,7 @@ import { reactive, computed } from 'vue';
 import type {
   AppConfig,
   BaseMapMode,
+  DataSourceMode,
   RadarFileMeta,
   RadarProduct,
   ValueRange
@@ -84,6 +85,18 @@ export interface AppState {
    *   - admin ：天地图行政底图
    */
   baseMap: BaseMapMode;
+  /**
+   * 数据来源模式（来自 config.json 的 dataSourceMode，缺省 both）。
+   * 只影响取数编排：latest 不加载文件清单；upload 完全不取服务器数据。
+   * 上传入口在三种模式下均保留，不据此隐藏 UI。
+   */
+  dataSourceMode: DataSourceMode;
+  /**
+   * 本地文件夹文件的时次（ISO 串，升序）。
+   * 由「文件夹文件」选择目录后写入：时间轴显示绿色刻度并可跳转 / 取数到这些时次。
+   * 与 files（服务器清单）分离，避免 refresh 误把本地文件当成 URL 去 fetch。
+   */
+  localFileTimes: string[];
 }
 
 /** 创建 n 个屏的初始配置 */
@@ -117,7 +130,11 @@ export const appState = reactive<AppState>({
   syncPlay: true,
   syncMap: true,
   // 默认国界底图：不依赖天地图 key，弱网/离线也能看出地理轮廓
-  baseMap: 'border'
+  baseMap: 'border',
+  // 默认两者同时存在，保持原有完整行为（配置加载后按 config.json 覆盖）
+  dataSourceMode: 'both',
+  // 本地文件夹文件时次（选择目录后写入）
+  localFileTimes: []
 });
 
 /* ─────────────────────────── mutations ─────────────────────────── */
@@ -328,6 +345,22 @@ export function setBaseMap(mode: BaseMapMode): void {
   appState.baseMap = mode;
 }
 
+/**
+ * 设置数据来源模式（App 启动读取 config.json 后调用）。
+ * 只影响初始化与取数编排，不改变上传入口的显隐。
+ */
+export function setDataSourceMode(mode: DataSourceMode): void {
+  appState.dataSourceMode = mode;
+}
+
+/**
+ * 登记本地文件夹文件的时次（选择目录后调用；空数组表示清空）。
+ * 时间轴据此显示刻度并可跳转，取数时优先命中本地 File。
+ */
+export function setLocalFileTimes(times: string[]): void {
+  appState.localFileTimes = [...times].sort();
+}
+
 /** 更新某屏展示状态文本（不参与播放避让判断） */
 export function setScreenStatus(id: number, status: string): void {
   const s = findScreen(id);
@@ -405,8 +438,12 @@ export const activeScreen = computed<ScreenState>(
  * 优先用配置生成的时间轴（setTimeline 写入）；未配置时回退为清单内文件时刻。
  */
 export const timelineTimes = computed<string[]>(() => {
-  if (appState.timeline.length > 0) return appState.timeline;
-  const set = new Set<string>();
-  for (const f of appState.files) if (f.time) set.add(f.time);
+  // 基础时次：配置生成的时间轴优先，否则回退清单文件时刻
+  const set = new Set<string>(appState.timeline);
+  if (appState.timeline.length === 0) {
+    for (const f of appState.files) if (f.time) set.add(f.time);
+  }
+  // 合并本地文件夹文件时次：它们不在配置栅格上，但时间轴需能选中 / 步进到
+  for (const t of appState.localFileTimes) if (t) set.add(t);
   return Array.from(set).sort();
 });

@@ -118,6 +118,14 @@ export interface TimelineConfig {
  *   - fileUrlTemplate ：按时间模板直接构造文件地址（优先）
  *   - fileListUrl     ：清单地址，按时间在清单中精确匹配
  */
+/**
+ * 数据来源模式（config.json 的 dataSourceMode 字段）：
+ *   - latest：只通过最新数据接口获取（查最新时间定位最新文件，不加载文件清单；上传保留）
+ *   - upload：只通过上传文件（时间轴按配置生成，不查最新时间、不加载清单、不取服务器数据）
+ *   - both  ：两者同时存在（清单 / 模板 / 最新时间 + 本地上传），默认
+ */
+export type DataSourceMode = 'latest' | 'upload' | 'both';
+
 export interface AppConfig {
   /** 时间轴生成规则 */
   timeline: TimelineConfig;
@@ -125,6 +133,8 @@ export interface AppConfig {
   fileUrlTemplate: string;
   /** 文件清单地址（清单模式使用） */
   fileListUrl: string;
+  /** 数据来源模式；缺省（或非法值）按 'both' 处理，保持原有完整行为 */
+  dataSourceMode?: DataSourceMode;
 }
 
 /**

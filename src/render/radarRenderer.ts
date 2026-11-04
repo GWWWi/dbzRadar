@@ -310,45 +310,24 @@ export function updateRadarSmooth(
 /**
  * 查询网格中某经纬度点的数值（最近邻格点取值）。
  *
- * 坐标 → 格点索引的换算口径（全平台只此一处）：
+ * 实现已下沉到 `utils/gridSample`（纯函数，可在 Node 下单测，不拖入 QuickEarth）；
+ * 这里保留 re-export，调用方 `import { sampleGridValue } from '../render/radarRenderer'`
+ * 无需改动。
+ *
+ * 坐标 → 格点索引的换算口径（全平台只此一处，见 utils/gridSample.gridIndex）：
  *   col = round((lon - xStart) / xDelta)
  *   row = round((lat - yStart) / yDelta)
  *   - RadarGrid 契约规定 xStart/yStart 是第 0 列/行【格点】的坐标，
  *     因此“四舍五入”等价于取最近格点中心，不是取像元左下角。
  *   - yDelta 为负（第 0 行在最北）时同样成立：分母为负，商自动反向。
- *   - Math.round 对负数按 floor(x + 0.5) 统一取整，无需额外补偿。
  *   - ⚠️ 已知遗留：若 QE bitmap 渲染的像元锚点与格点中心相差半格，
  *     会出现“点击值与色块差一档”。该假设需用真实数据比对渲染色档后
  *     才能定论，确认前不得擅自加 0.5 偏移（会把精度问题变成系统性偏移）。
  *
- * 阈值口径：渲染时低于产品首个可见阈值的格点是透明的，
- *   所以这里用同一阈值过滤，否则点击无回波区会弹出数值。
- *
- * @param grid       原始网格（渲染不再就地修改它，data 为未过滤的原始值）
- * @param lat        点击纬度
- * @param lon        点击经度
- * @param minVisible 显示阈值（firstVisibleThreshold(product)）；省略则不做阈值过滤
- * @param range      显示范围；范围外的格点在图上透明，取值同样返回 null
- * @returns 数值；越界 / 缺测 / 非有限值 / 低于阈值 / 范围外时返回 null
+ * 阈值口径：低于产品首个可见阈值或超出色标范围的格点在图上透明，
+ * 取值同样返回 null（与渲染共用 `isValueVisible`）。
  */
-export function sampleGridValue(
-  grid: RadarGrid,
-  lat: number,
-  lon: number,
-  minVisible?: number,
-  range?: ValueRange | null
-): number | null {
-  const col = Math.round((lon - grid.xStart) / grid.xDelta);
-  const row = Math.round((lat - grid.yStart) / grid.yDelta);
-  if (col < 0 || col >= grid.xSize || row < 0 || row >= grid.ySize) return null;
-
-  const v = grid.data[row * grid.xSize + col];
-  if (v === grid.undef || !Number.isFinite(v)) return null;
-
-  // 与渲染共用同一口径：阈值以下或范围外的值在图上透明，取值也返回 null
-  if (!isValueVisible(v, minVisible, range)) return null;
-  return v;
-}
+export { sampleGridValue, sampleGridRaw } from '../utils/gridSample';
 
 /**
  * 从地图移除雷达图层（时间切换重建前 / 组件卸载时调用）。

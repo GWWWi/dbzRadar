@@ -18,7 +18,7 @@
  * ────────────────────────────────────────────────────────────────────────
  */
 
-import type { AppConfig, TimelineConfig } from '../types';
+import type { AppConfig, DataSourceMode, TimelineConfig } from '../types';
 import { isoToMs, msToISO } from '../utils/datetime';
 import { fetchWithTimeout } from '../utils/http';
 
@@ -64,7 +64,10 @@ function normalizeConfig(raw: unknown): AppConfig | null {
   };
   const fileUrlTemplate = typeof r.fileUrlTemplate === 'string' ? r.fileUrlTemplate : '';
   const fileListUrl = typeof r.fileListUrl === 'string' && r.fileListUrl ? r.fileListUrl : 'data/manifest.json';
-  return { timeline, fileUrlTemplate, fileListUrl };
+  // 数据来源模式：只接受三个合法值，其余（缺省 / 拼错 / 类型非法）一律按 both 处理
+  const dataSourceMode: DataSourceMode =
+    r.dataSourceMode === 'latest' || r.dataSourceMode === 'upload' ? r.dataSourceMode : 'both';
+  return { timeline, fileUrlTemplate, fileListUrl, dataSourceMode };
 }
 
 /**

@@ -22,6 +22,45 @@
 
 # 迭代变更日志（按时间倒序）
 
+【2026-11-04 本轮改动（补充：恢复按钮可见性说明与环境提示）】
+
+1. 修改文件：`src/components/FolderFiles.vue`、`src/styles.css`
+
+2. 修改目的：用户看不到「恢复」按钮——截图里的组是早期 `webkitdirectory` 记录（无目录句柄），
+   只能「需重选」；同时补充环境提示，避免误以为功能失效。
+
+3. 关键规则沉淀：
+   - 「恢复」按钮**只在组有 `handle`**（用 `showDirectoryPicker` 选择过）时显示；
+     `webkitdirectory` 降级路径与历史记录没有句柄，只能「需重选」。
+   - 面板在 `window.showDirectoryPicker` 不可用时显示环境提示（需 https / localhost），
+     并在控制台打印自动恢复是否启用，便于现场排查。
+   - 「需重选」标签改为**可点击**（打开选择器），重选同名目录即替换占位组恢复加载。
+
+4. 验证方式：`npx vue-tsc --noEmit -p tsconfig.json` 通过；`npm test` 10 文件 73 用例全通过。
+
+【2026-11-04 本轮改动（目录句柄持久化：免重选自动恢复）】
+
+1. 修改文件：`src/types/fsAccess.d.ts`（新增）、`src/api/localFileStore.ts`（新增）、
+   `src/api/localFiles.ts`、`src/components/FolderFiles.vue`、`src/styles.css`
+
+2. 修改目的：跨会话后尽量不再需要重新选择文件夹即可加载文件。
+
+3. 关键规则沉淀：
+   - 双路径选择：`showDirectoryPicker`（Chromium + https/localhost）选择目录并把
+     `FileSystemDirectoryHandle` 存入 IndexedDB；不支持时降级 `input[webkitdirectory]`。
+   - 启动恢复：读句柄 → `queryPermission({mode:'read'})` 为 granted 时直接 `collectDirFiles`
+     重新枚举（**完全无需操作**）；为 prompt 时建占位组并在父级显示「恢复」，
+     点击触发 `requestPermission`（必须用户手势）后自动读取。
+   - 只有 `FileSystemDirectoryHandle` 可结构化克隆进 IndexedDB；**File 不行**。
+   - 句柄读写失败（隐私模式 / 老浏览器）全部降级为“结构占位 + 重选”，不影响既有功能。
+   - ★ 环境限制 ★ 局域网 http（现网默认）下 `window.showDirectoryPicker` 为 undefined，
+     拿不到句柄，此路径不生效；需要 **https 或 localhost**。
+   - TS 补充声明集中放 `src/types/fsAccess.d.ts`（showDirectoryPicker / values /
+     queryPermission / requestPermission）。
+
+4. 验证方式：`npx vue-tsc --noEmit -p tsconfig.json` 通过；`npm test` 10 文件 73 用例全通过。
+   ⚠ 免重选需浏览器实测（https/localhost + Chrome/Edge）：选目录 → 刷新 → 自动恢复或点一次「恢复」。
+
 【2026-11-04 本轮改动（文件夹结构跨会话记忆）】
 
 1. 修改文件：`src/api/localFiles.ts`、`src/components/FolderFiles.vue`、`src/styles.css`

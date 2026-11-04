@@ -2,13 +2,15 @@
   FolderFiles.vue —— 左侧侧栏「文件夹文件」区块
 
   功能：
-    - 「选择文件夹」：调起系统文件夹选择器（input[webkitdirectory]），
-      递归收集所选目录内的雷达数据文件（.bin / .m4 / .bz2，与屏头上传 accept 一致）；
+    - 「选择文件夹」：
+        · 优先 File System Access API（showDirectoryPicker）——可保存目录句柄，
+          下次打开浏览器**自动恢复文件**（无需重选）；
+        · 不支持时（http 局域网 / 非 Chromium）降级为 input[webkitdirectory]；
     - 多次选择**累加**：每个顶层文件夹是一个父级节点，互不覆盖；
-    - **跨会话记忆**：下次打开浏览器仍能看到上次添加的文件夹结构（localStorage）；
-      文件内容无法持久化，重新选择同名文件夹即恢复可加载状态（父级显示「需重选」）；
-    - 父级节点后的「删除」可整组移除（只有点击删除才删除）；
-    - 目录层级按 webkitRelativePath 还原，目录可展开/折叠；
+    - 跨会话记忆：下次打开仍能看到上次的文件夹结构；
+      有句柄且权限未授权时父级显示「恢复」，点一次即可，无需重新选目录；
+    - 父级节点后的「删除」可整组移除；
+    - 目录层级按相对路径还原，目录可展开/折叠；
     - 点击文件 → 经 uploadRouter 交给当前激活屏解析渲染（等同「上传」）。
 -->
 <script setup lang="ts">
@@ -18,9 +20,12 @@ import { appState, setLocalFileTimes } from '../store/appStore';
 import { uploadToScreen } from '../composables/uploadRouter';
 import {
   addLocalFolder,
+  collectDirFiles,
   getLocalFileTimes,
   getLocalGroups,
+  isRadarFileName,
   removeLocalFolder,
+  restoreGroupFromHandle,
   restoreLocalFolders
 } from '../api/localFiles';
 import type { LocalFolderGroup } from '../api/localFiles';
@@ -48,22 +53,44 @@ interface FlatNode {
   groupId: number | null;
   /** 是否为顶层文件夹（父级节点，显示「删除」） */
   isGroupRoot: boolean;
-  /** 所属组是否含真实文件（false = 记忆占位，点击需重新选择） */
+  /** 所属组是否含真实文件（false = 记忆占位） */
   ready: boolean;
+  /** 是否有目录句柄（有则可点「恢复」自动读取，无需重新选择） */
+  hasHandle: boolean;
 }
 
 const groups = ref<LocalFolderGroup[]>([]);
 const inputRef = ref<HTMLInputElement | null>(null);
 /** 已折叠的目录 key 集合（默认空 = 全部展开） */
 const collapsed = ref<Set<string>>(new Set());
+/**
+ * 是否支持目录授权（showDirectoryPicker）。
+ * true：选择文件夹时可保存句柄，下次自动恢复；false：http 局域网等非安全上下文，只能重新选择。
+ */
+const canAutoRestore = typeof window.showDirectoryPicker === 'function';
 
-/** 与屏头上传 accept 一致：只收集 parseUploadedFile 能解析的格式（含 .bz2 压缩分发） */
-function isRadarFile(name: string): boolean {
-  return /\.(bin|m4|bz2)$/i.test(name);
-}
-
-/** 打开系统文件夹选择器（需用户手势，故用 ref 触发隐藏 input 的 click） */
-function onPickFolder(): void {
+/**
+ * 打开文件夹选择器。
+ * 优先 File System Access API（能保存句柄、下次自动恢复）；失败/不支持时降级 input。
+ */
+async function onPickFolder(): Promise<void> {
+  if (typeof window.showDirectoryPicker === 'function') {
+    try {
+      const handle = await window.showDirectoryPicker({ id: 'radar-folder', mode: 'read' });
+      const items = await collectDirFiles(handle);
+      if (!addLocalFolder(items, handle)) {
+        ElMessage.warning('该文件夹内没有可识别的雷达文件（需 .bin/.m4/.bz2 且文件名含 14 位时刻）');
+        return;
+      }
+      syncFromStore();
+      return;
+    } catch (e) {
+      // 用户取消选择：静默返回
+      if (e instanceof DOMException && e.name === 'AbortError') return;
+      console.warn('[FolderFiles] showDirectoryPicker 失败，降级为 input 选择：', e);
+    }
+  }
+  // 降级路径：webkitdirectory（无法保存句柄，下次仍需重新选择或点「恢复」）
   inputRef.value?.click();
 }
 
@@ -87,7 +114,7 @@ function onFolderChange(e: Event): void {
   if (files.length === 0) return;
 
   const items = files
-    .filter((f) => isRadarFile(f.name))
+    .filter((f) => isRadarFileName(f.name))
     .map((f) => ({ file: f, relPath: relPathOf(f) }));
 
   if (!addLocalFolder(items)) {
@@ -102,6 +129,17 @@ function onRemoveGroup(groupId: number | null): void {
   if (groupId == null) return;
   removeLocalFolder(groupId);
   syncFromStore();
+}
+
+/** 对占位组请求目录权限并自动读取（有句柄时可用，点一次即可） */
+async function onRestoreGroup(groupId: number | null): Promise<void> {
+  if (groupId == null) return;
+  if (await restoreGroupFromHandle(groupId)) {
+    syncFromStore();
+    ElMessage.success('已恢复上次文件夹');
+  } else {
+    ElMessage.warning('无法自动恢复，请点击「选择文件夹」重新选择');
+  }
 }
 
 /** 递归统计目录下（含子目录）文件数 */
@@ -143,7 +181,8 @@ const visibleNodes = computed<FlatNode[]>(() => {
     depth: number,
     nodeKey: string,
     groupId: number,
-    ready: boolean
+    ready: boolean,
+    hasHandle: boolean
   ): void => {
     const dirs = [...node.dirs.values()].sort((a, b) => a.name.localeCompare(b.name));
     for (const dir of dirs) {
@@ -158,9 +197,10 @@ const visibleNodes = computed<FlatNode[]>(() => {
         size: 0,
         groupId,
         isGroupRoot: false,
-        ready
+        ready,
+        hasHandle
       });
-      if (!collapsed.value.has(key)) walk(dir, depth + 1, key, groupId, ready);
+      if (!collapsed.value.has(key)) walk(dir, depth + 1, key, groupId, ready, hasHandle);
     }
     const files = [...node.files].sort((a, b) => a.name.localeCompare(b.name));
     for (const f of files) {
@@ -174,7 +214,8 @@ const visibleNodes = computed<FlatNode[]>(() => {
         size: f.size,
         groupId,
         isGroupRoot: false,
-        ready
+        ready,
+        hasHandle
       });
     }
   };
@@ -182,6 +223,7 @@ const visibleNodes = computed<FlatNode[]>(() => {
   for (const g of groups.value) {
     const root = buildGroupRoot(g);
     const groupKey = 'g' + g.id;
+    const hasHandle = !!g.handle;
     out.push({
       key: groupKey,
       name: g.name,
@@ -192,9 +234,10 @@ const visibleNodes = computed<FlatNode[]>(() => {
       size: 0,
       groupId: g.id,
       isGroupRoot: true,
-      ready: g.ready
+      ready: g.ready,
+      hasHandle
     });
-    if (!collapsed.value.has(groupKey)) walk(root, 1, groupKey, g.id, g.ready);
+    if (!collapsed.value.has(groupKey)) walk(root, 1, groupKey, g.id, g.ready, hasHandle);
   }
   return out;
 });
@@ -207,10 +250,10 @@ function toggleDir(key: string): void {
   collapsed.value = next;
 }
 
-/** 点击文件 → 交给激活屏渲染；记忆占位的文件提示重新选择文件夹 */
+/** 点击文件 → 交给激活屏渲染；记忆占位的文件提示重新选择或点「恢复」 */
 function onLoadEntry(file: File | null, ready: boolean): void {
   if (!ready || !file) {
-    ElMessage.info('该文件来自上次记忆，请重新选择该文件夹后再加载');
+    ElMessage.info('该文件来自上次记忆，请重新选择该文件夹或点击「恢复」后再加载');
     return;
   }
   uploadToScreen(appState.activeScreenId, file);
@@ -229,10 +272,13 @@ const activeIndex = computed(() => {
   return i >= 0 ? i + 1 : 1;
 });
 
-// 启动时恢复上次选择的文件夹结构（文件内容需重新选择目录后才能加载）
-onMounted(() => {
-  restoreLocalFolders();
+// 启动时恢复上次选择的文件夹（有句柄且已授权则直接读出文件，无需重选）
+onMounted(async () => {
+  await restoreLocalFolders();
   syncFromStore();
+  console.info(
+    `[FolderFiles] 目录自动恢复${canAutoRestore ? '已启用' : '不可用（需 https 或 localhost）'}`
+  );
 });
 </script>
 
@@ -245,7 +291,7 @@ onMounted(() => {
 
     <button class="btn folder-pick" @click="onPickFolder">选择文件夹</button>
 
-    <!-- 隐藏的文件夹选择输入：webkitdirectory 递归收集所选目录内全部文件 -->
+    <!-- 降级路径的隐藏输入：webkitdirectory 递归收集所选目录内全部文件 -->
     <input
       ref="inputRef"
       type="file"
@@ -254,6 +300,11 @@ onMounted(() => {
       hidden
       @change="onFolderChange"
     />
+
+    <!-- 环境提示：非 https/localhost 时无法保存目录句柄，只能重新选择 -->
+    <p v-if="!canAutoRestore" class="folder-hint">
+      当前环境不支持目录授权记忆（需 https 或 localhost），下次打开需重新选择文件夹。
+    </p>
 
     <p v-if="groups.length === 0" class="folder-empty">
       尚未选择文件夹（可多次选择累加，下次打开仍会记住）
@@ -271,11 +322,20 @@ onMounted(() => {
         >
           <span class="folder-caret">{{ collapsed.has(n.key) ? '▸' : '▾' }}</span>
           <span class="folder-dir-name">{{ n.name }}</span>
-          <!-- 记忆占位的父级：提示需重新选择该文件夹 -->
+          <!-- 占位父级：有句柄可点「恢复」自动读取；无句柄只能重新选择 -->
           <span
-            v-if="n.isGroupRoot && !n.ready"
+            v-if="n.isGroupRoot && !n.ready && n.hasHandle"
+            class="folder-restore"
+            title="点击授权并自动读取该文件夹（无需重新选择）"
+            @click.stop="onRestoreGroup(n.groupId)"
+          >
+            恢复
+          </span>
+          <span
+            v-else-if="n.isGroupRoot && !n.ready"
             class="folder-pending"
-            title="需重新选择该文件夹才能加载文件"
+            title="点击重新选择该文件夹（该组没有目录授权，无法自动恢复）"
+            @click.stop="onPickFolder"
           >
             需重选
           </span>

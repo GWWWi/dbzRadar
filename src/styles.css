@@ -304,7 +304,15 @@ button {
   opacity: 0.45;
 }
 
-/* 记忆占位的父级标签（“需重选”） */
+/* 环境提示：不支持目录授权记忆时说明原因 */
+.folder-hint {
+  margin: 2px 0 6px;
+  font-size: 10px;
+  color: #6b7f97;
+  line-height: 1.5;
+}
+
+/* 记忆占位的父级标签（“需重选”，可点击重新选择） */
 .folder-pending {
   flex-shrink: 0;
   padding: 0 3px;
@@ -313,6 +321,27 @@ button {
   color: #e0b07f;
   font-size: 9px;
   white-space: nowrap;
+  cursor: pointer;
+}
+
+.folder-pending:hover {
+  background: #6b4f22;
+}
+
+/* 占位父级的“恢复”按钮（有目录句柄时：点一次授权即可读取，无需重选） */
+.folder-restore {
+  flex-shrink: 0;
+  padding: 0 4px;
+  border-radius: 3px;
+  background: #14518f;
+  color: #cfe6ff;
+  font-size: 9px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.folder-restore:hover {
+  background: #1c6bbd;
 }
 
 .folder-item-name {

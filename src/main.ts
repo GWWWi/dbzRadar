@@ -18,6 +18,7 @@ import 'element-plus/theme-chalk/dark/css-vars.css';
 import './styles.css';             // 平台自定义样式
 
 import App from './App.vue';
+import { startVersionCheck } from './utils/versionCheck';
 
 // —— QuickEarth 初始化（全局仅需一次）——
 // wasm / workers 由 QE 运行时按需加载，路径相对站点根目录
@@ -28,3 +29,6 @@ qeInit(undefined, true);
 
 // —— 挂载 Vue 应用 ——
 createApp(App).mount('#app');
+
+// —— 部署更新检测：发现新版本自动刷新，避免用户需要硬刷新 ——
+startVersionCheck();

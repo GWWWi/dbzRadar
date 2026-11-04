@@ -22,3 +22,9 @@ interface ImportMetaEnv {
   /** 天地图 key（内网 WMTS 的 tk 与公网 DataServer 的 tk 不通用，需成对配置） */
   readonly VITE_TIANDITU_KEY?: string;
 }
+
+/**
+ * 构建版本号（vite.config.ts 的 define 注入，格式 yyyyMMddHHmmss）。
+ * 与构建产物根目录的 version.json 一致，用于前端检测部署更新（utils/versionCheck.ts）。
+ */
+declare const __APP_VERSION__: string;

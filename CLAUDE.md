@@ -22,6 +22,28 @@
 
 # 迭代变更日志（按时间倒序）
 
+【2026-11-04 本轮改动（新增构建版本检测，部署更新后自动刷新）】
+
+1. 修改文件：`vite.config.ts`、`src/utils/versionCheck.ts`（新增）、`src/main.ts`、`src/types/env.d.ts`
+
+2. 修改目的：部署新版本后，浏览器可能仍使用缓存的旧 index.html / JS，用户必须硬刷新才能看到新内容。
+   改为构建时产出 `version.json` + 注入 `__APP_VERSION__`，前端定时比对并自动刷新。
+
+3. 关键规则沉淀：
+   - `vite.config.ts` 每次 build 生成版本号 `yyyyMMddHHmmss`：`define` 注入 `__APP_VERSION__`，
+     并由插件 emit 出 `dist/version.json`（前端轮询源）。
+   - versionCheck **仅在生产构建启用**（dev 有 HMR）；首次延迟 10s，之后每 5 分钟检查，
+     页面切回前台时立即检查；页面隐藏时不刷新，避免后台标签丢状态。
+   - 防死循环：sessionStorage 记录“已为该版本自动刷新过”，刷新后仍不一致则改为提示 Ctrl+F5，
+     防止 index.html 被缓存时无限 reload。
+   - 请求 `version.json` 带 `?t=时间戳` 绕过缓存；404 / SPA 回落成 HTML（JSON.parse 失败）时静默忽略。
+   - ★ 部署依赖：nginx 必须对 `index.html` 与 `version.json` 返回 `Cache-Control: no-cache`
+     （或很短过期），否则自动刷新后仍是旧内容（会退化为提示手动硬刷新）。
+
+4. 验证方式：`npx vue-tsc --noEmit -p tsconfig.json` 通过；`npm run build` 成功，
+   `dist/version.json` 产出 `{"version":"20261104134749"}`，且该版本号已内联进
+   `dist/assets/index-*.js`（findstr 命中）。
+
 【2026-11-04 本轮改动（仅上传模式隐藏时间轴与播放）】
 
 1. 修改文件：`src/App.vue`、`src/components/Toolbar.vue`、`public/data/dataSourceMode.md`

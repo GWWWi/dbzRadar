@@ -1,5 +1,41 @@
 import { defineConfig } from 'vite';
+import type { Plugin } from 'vite';
 import vue from '@vitejs/plugin-vue';
+
+/**
+ * 构建版本号（yyyyMMddHHmmss）。
+ *
+ * 用途：注入前端常量 __APP_VERSION__，并在 build 时产出 dist/version.json。
+ * 前端定时拉取 version.json 与运行中的版本比较，发现更新即自动刷新，
+ * 避免部署后用户仍停留在旧 index.html / 旧 JS（必须硬刷新才能看到新内容）。
+ */
+const BUILD_VERSION = (() => {
+  const d = new Date();
+  const p = (n: number) => String(n).padStart(2, '0');
+  return (
+    d.getFullYear() +
+    p(d.getMonth() + 1) +
+    p(d.getDate()) +
+    p(d.getHours()) +
+    p(d.getMinutes()) +
+    p(d.getSeconds())
+  );
+})();
+
+/** 产出 dist/version.json（内容与构建时注入的 __APP_VERSION__ 一致，供前端轮询比对） */
+function versionFilePlugin(): Plugin {
+  return {
+    name: 'emit-version-json',
+    apply: 'build',
+    generateBundle() {
+      this.emitFile({
+        type: 'asset',
+        fileName: 'version.json',
+        source: JSON.stringify({ version: BUILD_VERSION })
+      });
+    }
+  };
+}
 
 /**
  * vite.config.ts —— Vite 构建配置
@@ -15,7 +51,11 @@ import vue from '@vitejs/plugin-vue';
  *    会导致运行时 "Cannot read properties of undefined (reading 'apply')" 白屏崩溃）。
  */
 export default defineConfig({
-  plugins: [vue()],
+  define: {
+    // 前端代码中的 __APP_VERSION__ 会被替换为该字面量（dev / build 都注入）
+    __APP_VERSION__: JSON.stringify(BUILD_VERSION)
+  },
+  plugins: [vue(), versionFilePlugin()],
   server: {
     port: 5179,
     // host: true → 监听 0.0.0.0（含局域网网卡），可经本机 IP 访问；

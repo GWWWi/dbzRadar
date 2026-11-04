@@ -4,29 +4,33 @@
   功能：
     - 「选择文件夹」：调起系统文件夹选择器（input[webkitdirectory]），
       递归收集所选目录内的雷达数据文件（.bin / .m4 / .bz2，与屏头上传 accept 一致）；
-    - 按文件自带的相对路径（webkitRelativePath）还原**目录层级树**：
-      目录可展开/折叠，默认全部展开；文件显示大小；
+    - 多次选择**累加**：每个顶层文件夹是一个父级节点，互不覆盖；
+    - **跨会话记忆**：下次打开浏览器仍能看到上次添加的文件夹结构（localStorage）；
+      文件内容无法持久化，重新选择同名文件夹即恢复可加载状态（父级显示「需重选」）；
+    - 父级节点后的「删除」可整组移除（只有点击删除才删除）；
+    - 目录层级按 webkitRelativePath 还原，目录可展开/折叠；
     - 点击文件 → 经 uploadRouter 交给当前激活屏解析渲染（等同「上传」）。
 -->
 <script setup lang="ts">
-import { computed, ref } from 'vue';
+import { computed, onMounted, ref } from 'vue';
+import { ElMessage } from 'element-plus';
 import { appState, setLocalFileTimes } from '../store/appStore';
 import { uploadToScreen } from '../composables/uploadRouter';
-import { setLocalFolderFiles } from '../api/localFiles';
+import {
+  addLocalFolder,
+  getLocalFileTimes,
+  getLocalGroups,
+  removeLocalFolder,
+  restoreLocalFolders
+} from '../api/localFiles';
+import type { LocalFolderGroup } from '../api/localFiles';
 
-/** 文件夹中的一个可加载文件；File 内容延迟读取，不占内存 */
-interface FolderEntry {
-  file: File;
-  /** 相对所选文件夹的路径（含子目录），用于还原层级 */
-  relPath: string;
-}
-
-/** 目录树节点（仅用于把相对路径组织成层级） */
+/** 目录树节点（组内子树，不含顶层文件夹名） */
 interface DirNode {
   name: string;
   path: string;
   dirs: Map<string, DirNode>;
-  files: { name: string; file: File }[];
+  files: { name: string; file: File | null; size: number }[];
   /** 该目录下（含子目录）文件总数 */
   total: number;
 }
@@ -39,12 +43,18 @@ interface FlatNode {
   isDir: boolean;
   childCount: number;
   file: File | null;
+  /** 文件大小（占位时来自记忆） */
+  size: number;
+  groupId: number | null;
+  /** 是否为顶层文件夹（父级节点，显示「删除」） */
+  isGroupRoot: boolean;
+  /** 所属组是否含真实文件（false = 记忆占位，点击需重新选择） */
+  ready: boolean;
 }
 
-const folderName = ref('');
-const entries = ref<FolderEntry[]>([]);
+const groups = ref<LocalFolderGroup[]>([]);
 const inputRef = ref<HTMLInputElement | null>(null);
-/** 已折叠的目录路径集合（默认空 = 全部展开） */
+/** 已折叠的目录 key 集合（默认空 = 全部展开） */
 const collapsed = ref<Set<string>>(new Set());
 
 /** 与屏头上传 accept 一致：只收集 parseUploadedFile 能解析的格式（含 .bz2 压缩分发） */
@@ -62,35 +72,36 @@ function relPathOf(f: File): string {
   return (f as File & { webkitRelativePath?: string }).webkitRelativePath || f.name;
 }
 
-/** 选择文件夹后：过滤 + 登记本地文件源 + 重建层级树 */
+/** 把本地文件源的最新状态同步到 UI 与时间轴 */
+function syncFromStore(): void {
+  groups.value = getLocalGroups();
+  setLocalFileTimes(getLocalFileTimes());
+}
+
+/** 选择文件夹后：**追加**一组（同名占位组会被恢复为真实文件） */
 function onFolderChange(e: Event): void {
   const input = e.target as HTMLInputElement;
   const files = Array.from(input.files ?? []);
   // 立即清空，允许下次重新选择同一文件夹
   input.value = '';
-  // 重新选择目录时重置折叠状态，避免旧路径残留
-  collapsed.value = new Set();
+  if (files.length === 0) return;
 
-  if (files.length === 0) {
-    folderName.value = '';
-    entries.value = [];
-    // 清空本地文件源：时间轴刻度同步消失
-    setLocalFolderFiles([]);
-    setLocalFileTimes([]);
+  const items = files
+    .filter((f) => isRadarFile(f.name))
+    .map((f) => ({ file: f, relPath: relPathOf(f) }));
+
+  if (!addLocalFolder(items)) {
+    ElMessage.warning('该文件夹内没有可识别的雷达文件（需 .bin/.m4/.bz2 且文件名含 14 位时刻）');
     return;
   }
+  syncFromStore();
+}
 
-  // 文件夹名取首个文件相对路径的第一段（webkitRelativePath = "文件夹/子目录/文件"）
-  folderName.value = relPathOf(files[0]).split('/')[0] ?? '';
-
-  const radarFiles = files.filter((f) => isRadarFile(f.name));
-  entries.value = radarFiles
-    .map((f) => ({ file: f, relPath: relPathOf(f) }))
-    .sort((a, b) => a.relPath.localeCompare(b.relPath));
-
-  // 登记本地文件源：时间轴据此显示“有文件”刻度，选中时次后直接解析本地文件
-  const metas = setLocalFolderFiles(radarFiles);
-  setLocalFileTimes(metas.map((m) => m.time));
+/** 删除一个父级文件夹（整组文件） */
+function onRemoveGroup(groupId: number | null): void {
+  if (groupId == null) return;
+  removeLocalFolder(groupId);
+  syncFromStore();
 }
 
 /** 递归统计目录下（含子目录）文件数 */
@@ -101,12 +112,12 @@ function countFiles(node: DirNode): number {
   return n;
 }
 
-/** 目录树（随 entries 变化重建） */
-const tree = computed<DirNode>(() => {
-  const root: DirNode = { name: '', path: '', dirs: new Map(), files: [], total: 0 };
-  for (const e of entries.value) {
-    const parts = e.relPath.split('/');
-    const fileName = parts.pop() ?? e.file.name;
+/** 把一个组的文件构建为子树（去掉 relPath 的顶层文件夹段，避免组名重复显示） */
+function buildGroupRoot(g: LocalFolderGroup): DirNode {
+  const root: DirNode = { name: g.name, path: '', dirs: new Map(), files: [], total: 0 };
+  for (const e of g.entries) {
+    const parts = e.relPath.split('/').slice(1); // 第 1 段 = 顶层文件夹名
+    const fileName = parts.pop() ?? e.file?.name ?? e.relPath;
     let cur = root;
     for (const part of parts) {
       const path = cur.path ? cur.path + '/' + part : part;
@@ -117,41 +128,74 @@ const tree = computed<DirNode>(() => {
       }
       cur = next;
     }
-    cur.files.push({ name: fileName, file: e.file });
+    cur.files.push({ name: fileName, file: e.file, size: e.size });
   }
   countFiles(root);
   return root;
-});
+}
 
-/** 按当前折叠状态输出可见节点（目录在前、同类按名称排序） */
+/** 按当前折叠状态输出可见节点（每组一个父级节点，目录在前、同类按名称排序） */
 const visibleNodes = computed<FlatNode[]>(() => {
   const out: FlatNode[] = [];
-  const walk = (node: DirNode, depth: number): void => {
+
+  const walk = (
+    node: DirNode,
+    depth: number,
+    nodeKey: string,
+    groupId: number,
+    ready: boolean
+  ): void => {
     const dirs = [...node.dirs.values()].sort((a, b) => a.name.localeCompare(b.name));
     for (const dir of dirs) {
+      const key = nodeKey + '/' + dir.name;
       out.push({
-        key: dir.path,
+        key,
         name: dir.name,
         depth,
         isDir: true,
         childCount: dir.total,
-        file: null
+        file: null,
+        size: 0,
+        groupId,
+        isGroupRoot: false,
+        ready
       });
-      if (!collapsed.value.has(dir.path)) walk(dir, depth + 1);
+      if (!collapsed.value.has(key)) walk(dir, depth + 1, key, groupId, ready);
     }
     const files = [...node.files].sort((a, b) => a.name.localeCompare(b.name));
     for (const f of files) {
       out.push({
-        key: node.path ? node.path + '/' + f.name : f.name,
+        key: nodeKey + '/' + f.name,
         name: f.name,
         depth,
         isDir: false,
         childCount: 0,
-        file: f.file
+        file: f.file,
+        size: f.size,
+        groupId,
+        isGroupRoot: false,
+        ready
       });
     }
   };
-  walk(tree.value, 0);
+
+  for (const g of groups.value) {
+    const root = buildGroupRoot(g);
+    const groupKey = 'g' + g.id;
+    out.push({
+      key: groupKey,
+      name: g.name,
+      depth: 0,
+      isDir: true,
+      childCount: root.total,
+      file: null,
+      size: 0,
+      groupId: g.id,
+      isGroupRoot: true,
+      ready: g.ready
+    });
+    if (!collapsed.value.has(groupKey)) walk(root, 1, groupKey, g.id, g.ready);
+  }
   return out;
 });
 
@@ -163,9 +207,13 @@ function toggleDir(key: string): void {
   collapsed.value = next;
 }
 
-/** 点击文件 → 交给激活屏渲染 */
-function onLoadEntry(file: File | null): void {
-  if (file) uploadToScreen(appState.activeScreenId, file);
+/** 点击文件 → 交给激活屏渲染；记忆占位的文件提示重新选择文件夹 */
+function onLoadEntry(file: File | null, ready: boolean): void {
+  if (!ready || !file) {
+    ElMessage.info('该文件来自上次记忆，请重新选择该文件夹后再加载');
+    return;
+  }
+  uploadToScreen(appState.activeScreenId, file);
 }
 
 /** 格式化文件大小（B / KB / MB） */
@@ -179,6 +227,12 @@ function formatSize(bytes: number): string {
 const activeIndex = computed(() => {
   const i = appState.screens.findIndex((s) => s.id === appState.activeScreenId);
   return i >= 0 ? i + 1 : 1;
+});
+
+// 启动时恢复上次选择的文件夹结构（文件内容需重新选择目录后才能加载）
+onMounted(() => {
+  restoreLocalFolders();
+  syncFromStore();
 });
 </script>
 
@@ -201,13 +255,11 @@ const activeIndex = computed(() => {
       @change="onFolderChange"
     />
 
-    <div v-if="folderName" class="folder-name" :title="folderName">{{ folderName }}</div>
-
-    <p v-if="folderName && entries.length === 0" class="folder-empty">
-      该文件夹内没有可加载的雷达文件（.bin / .m4 / .bz2）
+    <p v-if="groups.length === 0" class="folder-empty">
+      尚未选择文件夹（可多次选择累加，下次打开仍会记住）
     </p>
 
-    <!-- 目录层级树：按缩进还原文件夹结构，目录可折叠 -->
+    <!-- 目录层级树：每个顶层文件夹是一个父级节点，父级后可删除 -->
     <ul v-if="visibleNodes.length" class="folder-list">
       <li v-for="n in visibleNodes" :key="n.key">
         <button
@@ -219,18 +271,36 @@ const activeIndex = computed(() => {
         >
           <span class="folder-caret">{{ collapsed.has(n.key) ? '▸' : '▾' }}</span>
           <span class="folder-dir-name">{{ n.name }}</span>
+          <!-- 记忆占位的父级：提示需重新选择该文件夹 -->
+          <span
+            v-if="n.isGroupRoot && !n.ready"
+            class="folder-pending"
+            title="需重新选择该文件夹才能加载文件"
+          >
+            需重选
+          </span>
           <span class="folder-item-size">{{ n.childCount }}</span>
+          <!-- 顶层文件夹（父级）才显示删除；.stop 避免触发折叠 -->
+          <span
+            v-if="n.isGroupRoot"
+            class="folder-del"
+            title="删除该文件夹"
+            @click.stop="onRemoveGroup(n.groupId)"
+          >
+            删除
+          </span>
         </button>
 
         <button
           v-else
           class="folder-item"
+          :class="{ 'folder-item--pending': !n.ready }"
           :style="{ paddingLeft: 6 + n.depth * 14 + 'px' }"
           :title="n.key"
-          @click="onLoadEntry(n.file)"
+          @click="onLoadEntry(n.file, n.ready)"
         >
           <span class="folder-item-name">{{ n.name }}</span>
-          <span class="folder-item-size">{{ n.file ? formatSize(n.file.size) : '' }}</span>
+          <span class="folder-item-size">{{ formatSize(n.size) }}</span>
         </button>
       </li>
     </ul>

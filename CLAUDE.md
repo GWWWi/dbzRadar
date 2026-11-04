@@ -22,6 +22,46 @@
 
 # 迭代变更日志（按时间倒序）
 
+【2026-11-04 本轮改动（文件夹结构跨会话记忆）】
+
+1. 修改文件：`src/api/localFiles.ts`、`src/components/FolderFiles.vue`、`src/styles.css`
+
+2. 修改目的：下次打开浏览器仍能看到上次选择的文件夹结构（同一台电脑持久化）。
+
+3. 关键规则沉淀：
+   - **分层记忆**：结构（组名 / 文件名 / 大小 / 时次）写 localStorage（key 为 `radar:local-folders`）；
+     文件内容（File）是浏览器安全对象，**无法**写入 localStorage / IndexedDB，故不持久化。
+   - 恢复出的组 `ready=false`（占位）：不进入 byTime 索引、不参与按时间取数；文件行置灰，
+     点击提示重新选择；父级显示「需重选」标签。
+   - 重新选择**同名目录**时 `addLocalFolder` 用真实文件替换同名占位组，避免重选后出现重复组。
+   - `LocalEntry.file` 允许 null、`LocalEntry.size` 保存记忆大小，供占位树展示。
+   - localStorage 读写全部 try/catch：隐私模式 / 配额不足时静默降级，不影响当前会话。
+   - 若要“自动加载”（无需重选），需改用 `showDirectoryPicker` + IndexedDB 存目录句柄，
+     且要求 https/localhost + Chromium；现网 http 局域网不可用，故未采用。
+
+4. 验证方式：`npx vue-tsc --noEmit -p tsconfig.json` 通过；`npm test` 10 文件 73 用例全通过。
+   ⚠ 跨会话行为需浏览器实测：选择文件夹 → 刷新 → 仍显示结构（标记需重选）→ 重选同名目录后可加载。
+
+【2026-11-04 本轮改动（文件夹选择改为累加 + 父级删除）】
+
+1. 修改文件：`src/api/localFiles.ts`、`src/components/FolderFiles.vue`、`src/styles.css`
+
+2. 修改目的：
+   - 选择文件夹从“替换”改为“**累加**”：多次选择互不覆盖，会话内一直保留；
+   - 每个顶层文件夹作为**父级节点**，父级后可「删除」整组（只有点击删除才删除）；
+   - 空态提示说明刷新页面后需重新选择（File 无法持久化）。
+
+3. 关键规则沉淀：
+   - localFiles 改为多组结构 `LocalFolderGroup[]`（id / name / entries）：`addLocalFolder` 追加、
+     `removeLocalFolder` 按 id 删除；`byTime` 索引在 add / remove 后整体重建（同组时次后加入者优先）。
+   - 组 key 用 `'g' + id`（id 不复用），组内节点 key = 组 key + 路径，
+     避免多组同名目录的折叠状态互相串台。
+   - 删除按钮放在父级目录行内（`span @click.stop`），避免触发折叠；仅 `isGroupRoot` 显示。
+   - 本地文件**仅在内存**：File 是浏览器安全对象，无法写入 localStorage / IndexedDB，
+     刷新页面后需重新选择（浏览器限制，不是实现缺陷）。
+
+4. 验证方式：`npx vue-tsc --noEmit -p tsconfig.json` 通过；`npm test` 10 文件 73 用例全通过。
+
 【2026-11-04 本轮改动（文件夹文件按目录层级展示）】
 
 1. 修改文件：`src/components/FolderFiles.vue`、`src/styles.css`
@@ -1261,3 +1301,10 @@
   3) 脚本会用 0 字节覆盖已有 .bin.bin（解压失败时），建议加"已有非空产物则跳过解压"保护
 - ★ 点击取值弹窗数值与色块颜色不一致（用户截图：色块品红 60~65 档，弹窗显示 54.0 dBZ）。已排查结论：QE BitmapColorScaleGL.createFromStopRules 的 value→颜色分段映射验证正确（54 → 红档）；疑似 sampleGridValue 的 Math.round 最近邻取样与 QE bitmap 渲染的格点定位（格点=像元中心还是左下角锚点）存在半格偏移，或 yDelta<0 行序理解不一致。待继续定位（可用真实数据对比点击点邻域格点值与渲染色档）。
 - 时间轴 / 配置 / 底图 / 色标范围 / 分屏切换等功能已通过多轮 `vue-tsc` 与 `npm run build` 验证，浏览器交互项已由用户手工确认；无自动化测试框架（P5 待补 vitest）。
+- ★ m4 格点产品与 RSTM 基数据同经纬度数值不同**属正常现象，不是取值 bug** ★
+  m4（MICAPS Diamond 4）是经质控 / 多仰角合成 / 平滑插值后的**格点产品**，格距与起止经纬度由文件头给定；
+  RSTM（`*.bin.bz2`）是该次体扫的**原始基数据**（单一仰角层、极坐标）。
+  取值口径也不同：m4 走栅格最近邻（`utils/gridSample`），RSTM 优先走极坐标原始径向最近邻
+  （`parse/valueQuery.rawValueAt` → `sampleRstmValue`，无网格量化）。
+  两者采样到的“体”本就不同；弱回波（低于显示阈值）区间相差数 dBZ 更常见。
+  跨数据源比对前须统一：同一产品 / 同一仰角 / 同一处理链，并核对 m4 文件头的格距与起止经纬度。

@@ -283,6 +283,38 @@ button {
   font-size: 11px;
 }
 
+/* 顶层文件夹后的删除按钮（点击不触发折叠） */
+.folder-del {
+  flex-shrink: 0;
+  margin-left: 4px;
+  padding: 0 4px;
+  border-radius: 3px;
+  color: #ff7875;
+  font-size: 10px;
+  cursor: pointer;
+}
+
+.folder-del:hover {
+  background: rgba(255, 120, 117, 0.15);
+  text-decoration: underline;
+}
+
+/* 记忆占位（未重新选择文件夹）：文件行置灰，点击只提示重新选择 */
+.folder-item--pending {
+  opacity: 0.45;
+}
+
+/* 记忆占位的父级标签（“需重选”） */
+.folder-pending {
+  flex-shrink: 0;
+  padding: 0 3px;
+  border-radius: 3px;
+  background: #4d3a1d;
+  color: #e0b07f;
+  font-size: 9px;
+  white-space: nowrap;
+}
+
 .folder-item-name {
   overflow: hidden;
   text-overflow: ellipsis;

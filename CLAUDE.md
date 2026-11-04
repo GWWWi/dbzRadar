@@ -22,6 +22,22 @@
 
 # 迭代变更日志（按时间倒序）
 
+【2026-11-04 本轮改动（文件夹文件按目录层级展示）】
+
+1. 修改文件：`src/components/FolderFiles.vue`、`src/styles.css`
+
+2. 修改目的：选择文件夹后按文件自带的相对路径（webkitRelativePath）还原目录层级树，
+   替代原来的平铺列表。
+
+3. 关键规则沉淀：
+   - 用 `webkitRelativePath` 的 `/` 分段构建 DirNode 树，再按折叠状态扁平化为 visibleNodes；
+     模板只渲染扁平数组 + 内联 `padding-left` 缩进（不引入递归组件，改动面更小）。
+   - 目录默认全部展开；重新选择目录时重置 `collapsed`（避免旧路径残留）；
+     目录节点显示其下（含子目录）文件数。
+   - 树只影响展示：本地文件源（localFiles / localFileTimes）与取数逻辑完全不变。
+
+4. 验证方式：`npx vue-tsc --noEmit -p tsconfig.json` 通过；`npm test` 10 文件 73 用例全通过。
+
 【2026-11-04 本轮改动（新增构建版本检测，部署更新后自动刷新）】
 
 1. 修改文件：`vite.config.ts`、`src/utils/versionCheck.ts`（新增）、`src/main.ts`、`src/types/env.d.ts`

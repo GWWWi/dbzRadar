@@ -245,8 +245,42 @@ button {
   transition: background 0.15s;
 }
 
-.folder-item:hover {
+.folder-item:hover,
+.folder-dir:hover {
   background: #24344c;
+}
+
+/* 目录节点：比文件行更轻，用于还原文件夹层级；缩进由模板内联 padding-left 控制 */
+.folder-dir {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-bottom: 2px;
+  padding: 3px 6px;
+  text-align: left;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: #162030;
+  color: #9fb4cc;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+/* 折叠箭头（▸ / ▾） */
+.folder-caret {
+  flex-shrink: 0;
+  width: 10px;
+  font-size: 9px;
+  color: #7fd0ff;
+}
+
+.folder-dir-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
 }
 
 .folder-item-name {

@@ -44,6 +44,8 @@ import {
 } from '../api/radarApi';
 import type { UploadErrorReason } from '../api/radarApi';
 import { formatShortTime, isoToMs } from '../utils/datetime';
+// 提示文案统一走 constants/messages（屏头状态 / 上传结果），禁止在这里再写字面量
+import { noDataText, STATUS, UPLOAD_MSG, uploadDataLabel } from '../constants/messages';
 import { volumeToGrid } from '../parse/cinradVolume';
 // 取值逻辑（字段映射 / 原始值 / 九点均值 / 可见性）已抽成纯函数，便于单测
 import { fieldForProduct, queryValue } from '../parse/valueQuery';
@@ -62,10 +64,10 @@ type ParsedRadarData = Awaited<ReturnType<typeof parseUploadedFile>>;
  * 非 UploadFileError 的意外错误统一显示「上传失败」。
  */
 const UPLOAD_ERROR_STATUS: Record<UploadErrorReason, string> = {
-  size: '文件过大',
-  decode: '文件损坏',
-  format: '文件格式不符',
-  empty: '无有效数据'
+  size: STATUS.fileTooLarge,
+  decode: STATUS.fileCorrupt,
+  format: STATUS.wrongFormat,
+  empty: STATUS.noValidData
 };
 
 /**
@@ -93,10 +95,9 @@ function nearestAvailableLabel(time: string): string {
   return best ? formatShortTime(best, true) : '';
 }
 
-/** 统一的「该时次无数据」文案（已知最近可用时次时一并给出） */
+/** 统一的「该时次无数据」文案（已知最近可用时次时一并给出，措辞见 constants/messages） */
 function noDataStatus(time: string): string {
-  const nearest = nearestAvailableLabel(time);
-  return nearest ? `该时次无数据（最近可用 ${nearest}）` : '该时次无数据';
+  return noDataText(nearestAvailableLabel(time));
 }
 
 /**
@@ -296,7 +297,7 @@ export function useRadarScreen(screenId: number) {
       const localFile = getLocalFile(sc.time);
       if (localFile) {
         setScreenLoading(screenId, true);
-        setScreenStatus(screenId, '加载中…');
+        setScreenStatus(screenId, STATUS.loading, 'busy');
         const data = await parseUploadedFile(localFile, product.id);
         if (token !== refreshToken) return;
         applyParsedData(data, localFile.name);
@@ -310,7 +311,7 @@ export function useRadarScreen(screenId: number) {
       if (appState.dataSourceMode === 'upload') {
         clearLayer();
         // 必须给出解释：否则切时次后画面凭空变空白，用户会当成加载失败
-        setScreenStatus(screenId, '仅上传模式：点屏头「上传」加载文件');
+        setScreenStatus(screenId, STATUS.uploadModeHint);
         return;
       }
 
@@ -323,13 +324,13 @@ export function useRadarScreen(screenId: number) {
         // 无数据时必须清掉上一时次的画面，否则屏上残留旧色斑图却提示“无数据”
         clearLayer();
         // 顺手给出最近可用时次，用户不必自己一个个试
-        setScreenStatus(screenId, noDataStatus(sc.time));
+        setScreenStatus(screenId, noDataStatus(sc.time), 'warn');
         return;
       }
 
       // 时间变化或首次 → 拉取并解析数据，重建图层
       setScreenLoading(screenId, true);
-      setScreenStatus(screenId, '加载中…');
+      setScreenStatus(screenId, STATUS.loading, 'busy');
       // 取消上一次仍在下载的请求：否则切时次时会有多个大文件并行下载
       inflight?.abort();
       inflight = new AbortController();
@@ -388,11 +389,12 @@ export function useRadarScreen(screenId: number) {
       console.error('[RadarScreen] 渲染失败：', e);
       // 失败时保留旧画面会让用户误读成“该时次的数据”，因此一并清空
       clearLayer();
-      // 404（模板模式时间轴时次未必有文件）→ 提示无数据；其余 → 加载失败
-      setScreenStatus(
-        screenId,
-        e instanceof RadarFileMissingError ? noDataStatus(sc.time) : '加载失败'
-      );
+      // 404（模板模式时间轴时次未必有文件）→ 提示无数据（warn）；其余（含超时）→ 加载失败（error）
+      if (e instanceof RadarFileMissingError) {
+        setScreenStatus(screenId, noDataStatus(sc.time), 'warn');
+      } else {
+        setScreenStatus(screenId, STATUS.loadFailed, 'error');
+      }
     }
   }
 
@@ -509,7 +511,7 @@ export function useRadarScreen(screenId: number) {
     // 上传路径完全静默，而 AGENTS.md 明确该标记禁止用于业务判断
     setScreenSynthetic(screenId, grid.isSynthetic === true);
     // 状态栏同时显示文件名，便于多屏 / 多文件时区分数据来源
-    setScreenStatus(screenId, '上传数据 · ' + label);
+    setScreenStatus(screenId, uploadDataLabel(label));
   }
 
   /**
@@ -528,16 +530,16 @@ export function useRadarScreen(screenId: number) {
     const token = ++refreshToken;
     try {
       setScreenLoading(screenId, true);
-      setScreenStatus(screenId, '识别中…');
+      setScreenStatus(screenId, STATUS.recognizing, 'busy');
       const data = await parseUploadedFile(file, sc.productId);
       if (token !== refreshToken) return;
       applyParsedData(data, file.name);
       setScreenLoading(screenId, false);
       // 合成兜底的文件虽然“识别成功”，画面却不是真实数据 → 用警告而不是成功提示
       if (screen.value?.synthetic) {
-        ElMessage.warning(`文件已加载但未能真实解码（画面为示意数据）：${file.name}`);
+        ElMessage.warning(UPLOAD_MSG.synthetic(file.name));
       } else {
-        ElMessage.success(`文件识别成功：${file.name}`);
+        ElMessage.success(UPLOAD_MSG.ok(file.name));
       }
     } catch (e) {
       // 过期上传的失败提示同样不应打扰当前操作（新操作负责管理 loading）
@@ -548,9 +550,10 @@ export function useRadarScreen(screenId: number) {
       // 一律显示“文件格式不符”会让用户把容量或损坏问题当成格式问题去转换
       setScreenStatus(
         screenId,
-        e instanceof UploadFileError ? UPLOAD_ERROR_STATUS[e.reason] : '上传失败'
+        e instanceof UploadFileError ? UPLOAD_ERROR_STATUS[e.reason] : STATUS.uploadFailed,
+        'error'
       );
-      ElMessage.error(e instanceof Error ? e.message : '上传文件解析失败');
+      ElMessage.error(e instanceof Error ? e.message : UPLOAD_MSG.failed);
     }
   }
 

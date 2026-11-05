@@ -27,6 +27,7 @@ import {
   getProductById as getStaticProductById,
   getProductList as getStaticProductList
 } from '../config/products';
+import type { ScreenStatusKind } from '../constants/messages';
 
 /** 布局类型：1 / 2 / 4 / 6 屏 */
 export type LayoutType = 1 | 2 | 4 | 6;
@@ -39,8 +40,14 @@ export interface ScreenState {
   productId: string;
   /** 本屏当前观测时刻 ISO 串（不同屏可不同 → 时间对比） */
   time: string;
-  /** 展示用状态文本（'加载中…'/'该时次无数据' 等，空串表示空闲） */
+  /** 展示用状态文本（'加载中…'/'该时次无数据' 等，空串表示空闲），文案见 constants/messages */
   status: string;
+  /**
+   * 状态语气（配色与读屏播报强弱）：busy=进行中 / warn=需注意 / error=失败。
+   * ★ 必须与 status 一起由 setScreenStatus 写入 ★ 只改文案不改语气会让
+   *   失败提示沿用“进行中”的颜色，等于把错误藏起来。
+   */
+  statusKind: ScreenStatusKind;
   /**
    * 本屏画面是否为“示意数据”（文件未能真实解码，画面由合成兜底生成）。
    * ★ 必须独立于 status ★ 数据来源标签（如「上传数据 · a.bin」）与这条警示
@@ -115,6 +122,7 @@ function createScreens(n: number): ScreenState[] {
     productId: 'dBZ',
     time: '',
     status: '',
+    statusKind: 'info',
     synthetic: false,
     loading: false,
     smooth: false,
@@ -171,6 +179,7 @@ export function setLayout(layout: LayoutType): void {
       productId: 'dBZ',
       time: '',
       status: '',
+      statusKind: 'info',
       synthetic: false,
       loading: false,
       smooth: false,
@@ -188,6 +197,7 @@ export function setLayout(layout: LayoutType): void {
         productId: base.productId,
         time: base.time,
         status: '',
+        statusKind: 'info',
         synthetic: false,
         loading: false,
         smooth: base.smooth,
@@ -371,10 +381,22 @@ export function setLocalFileTimes(times: string[]): void {
   appState.localFileTimes = [...times].sort();
 }
 
-/** 更新某屏展示状态文本（不参与播放避让判断） */
-export function setScreenStatus(id: number, status: string): void {
+/**
+ * 更新某屏展示状态文本与语气（不参与播放避让判断）。
+ *
+ * @param status 状态文案（空串 = 空闲）
+ * @param kind   语气：busy=进行中 / warn=需注意 / error=失败；默认 info。
+ *               文案为空时语气一并复位，避免清屏后残留红色语义。
+ */
+export function setScreenStatus(
+  id: number,
+  status: string,
+  kind: ScreenStatusKind = 'info'
+): void {
   const s = findScreen(id);
-  if (s) s.status = status;
+  if (!s) return;
+  s.status = status;
+  s.statusKind = status ? kind : 'info';
 }
 
 /**
@@ -440,6 +462,7 @@ const EMPTY_SCREEN: ScreenState = {
   productId: 'dBZ',
   time: '',
   status: '',
+  statusKind: 'info',
   synthetic: false,
   loading: false,
   smooth: false,

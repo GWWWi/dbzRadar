@@ -22,6 +22,38 @@
 
 # 迭代变更日志（按时间倒序）
 
+【2026-11-05 本轮改动（提示信息优化第 2 批：文案集中 + 状态语气 + 配色/无障碍）】
+
+1. 修改文件：`src/constants/messages.ts`（新增）、`src/constants/messages.test.ts`（新增）、
+   `src/store/appStore.ts`、`src/store/appStore.test.ts`、`src/composables/useRadarScreen.ts`、
+   `src/components/ScreenHeader.vue`、`src/components/FolderFiles.vue`、`src/App.vue`、
+   `src/utils/versionCheck.ts`、`src/styles.css`、`docs/USER_GUIDE.md`、`AGENTS.md`
+
+2. 修改目的：把散落在 composables / 组件里的提示字符串收口到一处；屏头状态不再只有一种橙色，
+   按语气区分进行中 / 需注意 / 失败；状态变化能被读屏器播报。
+
+3. 关键规则沉淀：
+   - ★ `src/constants/messages.ts` 是“反馈类”提示文案的唯一来源 ★（STATUS / UPLOAD_MSG /
+     VERSION_MSG / APP_MSG / FOLDER_MSG + `noDataText` / `uploadDataLabel`）。
+     与 `src/constants.ts` 分工：后者只放影响数据正确性的数值哨兵（UNDEF），文案一律不放。
+     两者并存时 `../constants` 解析到文件、`../constants/messages` 解析到目录，已验证 tsc/build 正常。
+   - 新增状态文案必须同时改 `messages.ts` 与 `docs/USER_GUIDE.md` §6 状态表；
+     屏头状态表是现场排查依据，脱离代码就失去意义。
+   - `ScreenState.statusKind: 'info'|'busy'|'warn'|'error'` 与 `status` 由
+     `setScreenStatus(id, text, kind)` 一起写入；★ 文案清空时语气一并复位 info ★
+     （否则清屏后残留 error 语义）。配色：busy 蓝 `#7fb2e0` / info 灰 `#9fb4cc` /
+     warn 橙 `#ffb45e` / error 红 `#ff7875`，类名 `.screen-status--<kind>`。
+   - ★ 无障碍：状态区必须是**常驻容器** `.screen-status-slot` + `role="status" aria-live="polite"` ★
+     aria-live 挂在 `v-if` 条件渲染的节点上时，节点插入不会被播报；只在内部切换文本。
+   - `FolderFiles` 里重复出现的同一句提示已合并为 `FOLDER_MSG.noRadarFile`（原两处各写一份）。
+   - 测试：新增 `messages.test.ts`（3 用例：无数据文案不出现空括号、带可用时次、来源标签）；
+     `appStore.test.ts` 增加 statusKind 3 用例（同时写入 / 清空复位 / 默认 info）。
+
+4. 验证方式：`npx vue-tsc --noEmit -p tsconfig.json` 通过；`npm test` **11 文件 79 用例**全通过；
+   `npm run build` 成功（10.83s，`dist/assets/index-DC29amw8.js` 109.46 kB，CSS 389.08 kB）。
+   ⚠ 需浏览器人工确认：① 状态文字颜色随语气变化（加载中=蓝、无数据=橙、失败=红）；
+   ② 切时次时读屏器播报状态变化（NVDA/VoiceOver）；③ 状态区超长文本仍省略且 title 可看全。
+
 【2026-11-05 本轮改动（提示信息优化第 1 批：修正误导/缺失提示 + 版本提示去重）】
 
 1. 修改文件：`src/store/appStore.ts`、`src/components/ScreenHeader.vue`、`src/styles.css`、

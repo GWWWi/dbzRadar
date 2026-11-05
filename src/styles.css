@@ -652,15 +652,38 @@ button {
   color: #9fb4cc;
 }
 
-.screen-status {
-  color: #ffb45e;
-  /* 上传文件名可能较长：超出可用宽度时省略，悬停经 title 查看完整内容 */
+/* 状态区容器：常驻 DOM（role=status 的 live region），宽度受限、内容超长省略 */
+.screen-status-slot {
   min-width: 0;
   max-width: 40%;
   overflow: hidden;
+  flex-shrink: 0;
+}
+
+/* 状态文字：单行省略；颜色由语气类决定（默认 info） */
+.screen-status {
+  display: block;
+  overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  flex-shrink: 0;
+  color: #9fb4cc;
+}
+
+/* 语气配色：进行中=蓝、需注意=橙、失败=红（红与 .coord-query-err 同色系） */
+.screen-status--busy {
+  color: #7fb2e0;
+}
+
+.screen-status--info {
+  color: #9fb4cc;
+}
+
+.screen-status--warn {
+  color: #ffb45e;
+}
+
+.screen-status--error {
+  color: #ff7875;
 }
 
 /* 「示意数据」警示标记：红底醒目，与状态文本分开（可与数据来源标签并存） */

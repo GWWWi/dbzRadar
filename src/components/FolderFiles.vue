@@ -29,6 +29,8 @@ import {
   restoreLocalFolders
 } from '../api/localFiles';
 import type { LocalFolderGroup } from '../api/localFiles';
+// 提示文案统一走 constants/messages（同一句“没有可识别文件”此前在两个入口各写一份）
+import { FOLDER_MSG } from '../constants/messages';
 
 /** 目录树节点（组内子树，不含顶层文件夹名） */
 interface DirNode {
@@ -79,7 +81,7 @@ async function onPickFolder(): Promise<void> {
       const handle = await window.showDirectoryPicker({ id: 'radar-folder', mode: 'read' });
       const items = await collectDirFiles(handle);
       if (!addLocalFolder(items, handle)) {
-        ElMessage.warning('该文件夹内没有可识别的雷达文件（需 .bin/.m4/.bz2 且文件名含 14 位时刻）');
+        ElMessage.warning(FOLDER_MSG.noRadarFile);
         return;
       }
       syncFromStore();
@@ -118,7 +120,7 @@ function onFolderChange(e: Event): void {
     .map((f) => ({ file: f, relPath: relPathOf(f) }));
 
   if (!addLocalFolder(items)) {
-    ElMessage.warning('该文件夹内没有可识别的雷达文件（需 .bin/.m4/.bz2 且文件名含 14 位时刻）');
+    ElMessage.warning(FOLDER_MSG.noRadarFile);
     return;
   }
   syncFromStore();
@@ -136,9 +138,9 @@ async function onRestoreGroup(groupId: number | null): Promise<void> {
   if (groupId == null) return;
   if (await restoreGroupFromHandle(groupId)) {
     syncFromStore();
-    ElMessage.success('已恢复上次文件夹');
+    ElMessage.success(FOLDER_MSG.restored);
   } else {
-    ElMessage.warning('无法自动恢复，请点击「选择文件夹」重新选择');
+    ElMessage.warning(FOLDER_MSG.restoreFailed);
   }
 }
 
@@ -253,7 +255,7 @@ function toggleDir(key: string): void {
 /** 点击文件 → 交给激活屏渲染；记忆占位的文件提示重新选择或点「恢复」 */
 function onLoadEntry(file: File | null, ready: boolean): void {
   if (!ready || !file) {
-    ElMessage.info('该文件来自上次记忆，请重新选择该文件夹或点击「恢复」后再加载');
+    ElMessage.info(FOLDER_MSG.pendingEntry);
     return;
   }
   uploadToScreen(appState.activeScreenId, file);

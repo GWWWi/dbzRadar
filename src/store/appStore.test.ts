@@ -18,6 +18,7 @@ afterEach(() => {
   s.productId = 'dBZ';
   s.time = '';
   s.status = '';
+  s.statusKind = 'info';
   s.loading = false;
   s.smooth = false;
   s.valueRange = null;
@@ -64,5 +65,28 @@ describe('ScreenState.loading', () => {
     setScreenLoading(0, false);
     expect(appState.screens[0].loading).toBe(false);
     expect(appState.screens[0].status).toBe('加载中…');
+  });
+});
+
+describe('ScreenState.statusKind', () => {
+  it('文案与语气同时写入（失败必须是 error，不能沿用进行中的蓝）', () => {
+    setScreenStatus(0, '加载中…', 'busy');
+    expect(appState.screens[0].statusKind).toBe('busy');
+
+    setScreenStatus(0, '加载失败', 'error');
+    expect(appState.screens[0].status).toBe('加载失败');
+    expect(appState.screens[0].statusKind).toBe('error');
+  });
+
+  it('清空文案时语气复位为 info', () => {
+    setScreenStatus(0, '加载失败', 'error');
+    setScreenStatus(0, '');
+    expect(appState.screens[0].status).toBe('');
+    expect(appState.screens[0].statusKind).toBe('info');
+  });
+
+  it('不传语气时默认 info', () => {
+    setScreenStatus(0, '上传数据 · a.bin');
+    expect(appState.screens[0].statusKind).toBe('info');
   });
 });

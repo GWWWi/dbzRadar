@@ -31,6 +31,8 @@ const screenIndex = computed(() => {
 
 const isActive = computed(() => appState.activeScreenId === props.screenId);
 const status = computed(() => screen.value?.status ?? '');
+/** 状态语气：决定配色（busy 蓝 / warn 橙 / error 红），由 setScreenStatus 与文案一起写入 */
+const statusKind = computed(() => screen.value?.statusKind ?? 'info');
 
 /** 产品名用 safe 查找：产品目录尚未落库时也能回退静态目录 */
 const productName = computed(() => getProductByIdSafe(screen.value?.productId ?? 'dBZ').name);
@@ -63,8 +65,20 @@ function onUploadChange(e: Event): void {
   <div class="screen-header">
     <span>第 {{ screenIndex }} 屏</span>
     <span class="screen-info">{{ productName }} · {{ timeText }}</span>
-    <!-- title：上传文件名过长被省略时，悬停可查看完整内容 -->
-    <span v-if="status" class="screen-status" :title="status">{{ status }}</span>
+    <!--
+      状态区：容器常驻 + aria-live，读屏器才能播报文案变化
+      （若把 aria-live 挂在条件渲染的节点上，节点插入时不会被播报）。
+      语气类决定配色：busy 进行中 / warn 需注意 / error 失败。
+    -->
+    <span class="screen-status-slot" role="status" aria-live="polite">
+      <!-- title：上传文件名过长被省略时，悬停可查看完整内容 -->
+      <span
+        v-if="status"
+        class="screen-status"
+        :class="'screen-status--' + statusKind"
+        :title="status"
+      >{{ status }}</span>
+    </span>
     <!--
       示意数据警示：独立于状态文本。
       上传的合成/旧格式文件同样需要这条警示，与「上传数据 · 文件名」并存。

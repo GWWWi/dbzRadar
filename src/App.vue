@@ -37,6 +37,8 @@ import {
 import { fetchProductList } from './api/productApi';
 import { clearGridCache, clearVolumeCache, fetchRadarFileList } from './api/radarApi';
 import { fetchAppConfig, buildTimelineTimes, fetchLatestTime, snapNearestTime } from './api/configApi';
+// 提示文案统一走 constants/messages
+import { APP_MSG } from './constants/messages';
 
 /** 网格布局 class：决定多屏排列方式 */
 const gridClass = () => `grid-${appState.layout}`;
@@ -85,9 +87,7 @@ onMounted(async () => {
     // 初始化失败必须有可见反馈：否则页面只是空产品列表 + 空时间轴，
     // 用户无法判断是“没有数据”还是“服务不可用”。
     // 注意：产品目录内部已有静态回退，这里通常捕获的是清单/配置请求失败。
-    ElMessage.error(
-      e instanceof Error ? e.message : '应用初始化失败，请检查数据服务是否可用'
-    );
+    ElMessage.error(e instanceof Error ? e.message : APP_MSG.initFailed);
   }
 });
 

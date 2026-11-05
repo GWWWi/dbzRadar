@@ -36,6 +36,12 @@ const status = computed(() => screen.value?.status ?? '');
 const productName = computed(() => getProductByIdSafe(screen.value?.productId ?? 'dBZ').name);
 const timeText = computed(() => formatShortTime(screen.value?.time ?? ''));
 
+/**
+ * 「示意数据」悬停说明：屏头空间只够挂一个标记，
+ * 但必须让值班人员看清“这不是实际天气”，不能只留三个字。
+ */
+const SYNTH_TIP = '该文件未能真实解码，画面是程序生成的演示团块，禁止用于任何业务判断';
+
 function onSmoothChange(e: Event): void {
   setScreenSmooth(props.screenId, (e.target as HTMLInputElement).checked);
 }
@@ -59,6 +65,11 @@ function onUploadChange(e: Event): void {
     <span class="screen-info">{{ productName }} · {{ timeText }}</span>
     <!-- title：上传文件名过长被省略时，悬停可查看完整内容 -->
     <span v-if="status" class="screen-status" :title="status">{{ status }}</span>
+    <!--
+      示意数据警示：独立于状态文本。
+      上传的合成/旧格式文件同样需要这条警示，与「上传数据 · 文件名」并存。
+    -->
+    <span v-if="screen?.synthetic" class="screen-synth" :title="SYNTH_TIP">⚠ 示意数据</span>
     <span v-if="isActive" class="active-dot">●</span>
 
     <!--

@@ -36,6 +36,26 @@ export class RadarFileMissingError extends Error {
 const MAX_UPLOAD_BYTES = 200 * 1024 * 1024;
 
 /**
+ * 上传失败原因码：
+ *   size   超过 200MB 上限；decode bz2 解压失败（文件损坏/被截断）；
+ *   format 不是受支持的格式；empty  格式对但解不出有效数据。
+ * 屏头状态按原因分别提示——此前一律显示「文件格式不符」，
+ * 会把“文件太大”“文件损坏”误导成“格式不对，去转换格式”。
+ */
+export type UploadErrorReason = 'size' | 'decode' | 'format' | 'empty';
+
+/** 上传文件错误：带原因码，message 直接面向用户展示 */
+export class UploadFileError extends Error {
+  readonly reason: UploadErrorReason;
+
+  constructor(reason: UploadErrorReason, message: string) {
+    super(message);
+    this.name = 'UploadFileError';
+    this.reason = reason;
+  }
+}
+
+/**
  * 用户上传文件的解析结果（按内容判别）：
  *   - kind='volume'：RSTM 标准基数据体（9 仰角层），栅格化由调用方按
  *     当前产品字段与仰角层执行（volumeToGrid），支持上传后切换仰角；
@@ -70,7 +90,8 @@ export async function parseUploadedFile(
 ): Promise<UploadedRadarData> {
   // 先卡体积再读文件：arrayBuffer 会把整个文件读进内存，超大文件会直接 OOM
   if (file.size > MAX_UPLOAD_BYTES) {
-    throw new Error(
+    throw new UploadFileError(
+      'size',
       `文件过大（${(file.size / 1024 / 1024).toFixed(0)}MB），上限 ${MAX_UPLOAD_BYTES / 1024 / 1024}MB`
     );
   }
@@ -84,7 +105,7 @@ export async function parseUploadedFile(
       buf = decompressBzip2(buf);
     } catch (e) {
       const reason = e instanceof Error ? e.message : String(e);
-      throw new Error('bzip2 解压失败：' + reason);
+      throw new UploadFileError('decode', 'bzip2 解压失败：' + reason);
     }
   }
 
@@ -127,7 +148,10 @@ export async function parseUploadedFile(
       })
     };
   }
-  throw new Error('文件格式不符合预设（支持：SWAN 拼图 / CINRAD RSTM / MICAPS m4）');
+  throw new UploadFileError(
+    'format',
+    '文件格式不符合预设（支持：SWAN 拼图 / CINRAD RSTM / MICAPS m4）'
+  );
 }
 
 /* ───────────────── 体数据失败时的 buffer 复用 ───────────────── */

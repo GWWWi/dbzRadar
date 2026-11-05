@@ -663,6 +663,17 @@ button {
   flex-shrink: 0;
 }
 
+/* 「示意数据」警示标记：红底醒目，与状态文本分开（可与数据来源标签并存） */
+.screen-synth {
+  flex-shrink: 0;
+  padding: 0 4px;
+  border-radius: 3px;
+  background: #8c2f2f;
+  color: #ffe2e2;
+  font-size: 11px;
+  cursor: help;
+}
+
 .active-dot {
   color: #37d67a;
   margin-left: auto;

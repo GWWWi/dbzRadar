@@ -16,7 +16,8 @@ import {
   getProductByIdSafe,
   setScreenElevations,
   setScreenLoading,
-  setScreenStatus
+  setScreenStatus,
+  setScreenSynthetic
 } from '../store/appStore';
 import {
   createRadarMap,
@@ -38,8 +39,11 @@ import {
   fetchRstmVolume,
   buildFileMetaFromTemplate,
   parseUploadedFile,
-  RadarFileMissingError
+  RadarFileMissingError,
+  UploadFileError
 } from '../api/radarApi';
+import type { UploadErrorReason } from '../api/radarApi';
+import { formatShortTime, isoToMs } from '../utils/datetime';
 import { volumeToGrid } from '../parse/cinradVolume';
 // 取值逻辑（字段映射 / 原始值 / 九点均值 / 可见性）已抽成纯函数，便于单测
 import { fieldForProduct, queryValue } from '../parse/valueQuery';
@@ -52,6 +56,48 @@ import { getLocalFile } from '../api/localFiles';
 
 /** 上传 / 本地文件夹文件解析结果的类型（由 parseUploadedFile 推断，避免重复声明） */
 type ParsedRadarData = Awaited<ReturnType<typeof parseUploadedFile>>;
+
+/**
+ * 上传失败原因 → 屏头状态文案（与 docs/USER_GUIDE.md §6 状态表一一对应）。
+ * 非 UploadFileError 的意外错误统一显示「上传失败」。
+ */
+const UPLOAD_ERROR_STATUS: Record<UploadErrorReason, string> = {
+  size: '文件过大',
+  decode: '文件损坏',
+  format: '文件格式不符',
+  empty: '无有效数据'
+};
+
+/**
+ * 「该时次无数据」时补充显示最接近的可加载时次（清单模式）。
+ *
+ * ★ 模板模式（fileUrlTemplate）直接返回空串 ★
+ *   模板地址是算出来的，无法预知哪些时次真有文件；给一个“最近可用”
+ *   会让用户拖过去仍然查不到，提示反而变成误导。
+ * 候选时刻取服务器清单 + 本地文件夹文件（两者都本地已知可加载）。
+ */
+function nearestAvailableLabel(time: string): string {
+  if (appState.fileUrlTemplate) return '';
+  const target = isoToMs(time);
+  if (!Number.isFinite(target)) return '';
+  let best = '';
+  let bestDelta = Number.POSITIVE_INFINITY;
+  for (const t of [...appState.files.map((f) => f.time), ...appState.localFileTimes]) {
+    if (!t) continue;
+    const delta = Math.abs(isoToMs(t) - target);
+    if (!Number.isFinite(delta) || delta >= bestDelta) continue;
+    bestDelta = delta;
+    best = t;
+  }
+  // 带秒显示：文件的真实时刻常带秒（如 03:17:55），只给到分钟会匹配不上
+  return best ? formatShortTime(best, true) : '';
+}
+
+/** 统一的「该时次无数据」文案（已知最近可用时次时一并给出） */
+function noDataStatus(time: string): string {
+  const nearest = nearestAvailableLabel(time);
+  return nearest ? `该时次无数据（最近可用 ${nearest}）` : '该时次无数据';
+}
 
 /**
  * @param screenId 屏的稳定 id（不是数组下标）
@@ -113,6 +159,8 @@ export function useRadarScreen(screenId: number) {
     layerRange = null;
     currentVolume = null;
     layerElevation = -1;
+    // 画面已清空：示意数据警示必须一起撤下，否则空屏仍挂着红色标记
+    setScreenSynthetic(screenId, false);
   }
 
   /**
@@ -261,7 +309,8 @@ export function useRadarScreen(screenId: number) {
       // 清空画面等待用户上传，只有上传时的那个时次有画面。
       if (appState.dataSourceMode === 'upload') {
         clearLayer();
-        setScreenStatus(screenId, '');
+        // 必须给出解释：否则切时次后画面凭空变空白，用户会当成加载失败
+        setScreenStatus(screenId, '仅上传模式：点屏头「上传」加载文件');
         return;
       }
 
@@ -273,7 +322,8 @@ export function useRadarScreen(screenId: number) {
       if (!file) {
         // 无数据时必须清掉上一时次的画面，否则屏上残留旧色斑图却提示“无数据”
         clearLayer();
-        setScreenStatus(screenId, '该时次无数据');
+        // 顺手给出最近可用时次，用户不必自己一个个试
+        setScreenStatus(screenId, noDataStatus(sc.time));
         return;
       }
 
@@ -322,10 +372,9 @@ export function useRadarScreen(screenId: number) {
       // 数据加载完成 → 按数据范围定位（同区域切时次不会重置用户视野）
       fitToGrid(grid);
       setScreenLoading(screenId, false);
-      setScreenStatus(
-        screenId,
-        grid.isSynthetic ? '示意数据' : ''
-      );
+      setScreenStatus(screenId, '');
+      // 合成兜底（文件未能真实解码）→ 独立红色警示，与状态文本并存
+      setScreenSynthetic(screenId, grid.isSynthetic === true);
     } catch (e) {
       // 过期请求的失败同样不能影响当前屏的状态
       if (token !== refreshToken) return;
@@ -340,7 +389,10 @@ export function useRadarScreen(screenId: number) {
       // 失败时保留旧画面会让用户误读成“该时次的数据”，因此一并清空
       clearLayer();
       // 404（模板模式时间轴时次未必有文件）→ 提示无数据；其余 → 加载失败
-      setScreenStatus(screenId, e instanceof RadarFileMissingError ? '该时次无数据' : '加载失败');
+      setScreenStatus(
+        screenId,
+        e instanceof RadarFileMissingError ? noDataStatus(sc.time) : '加载失败'
+      );
     }
   }
 
@@ -430,7 +482,7 @@ export function useRadarScreen(screenId: number) {
       const g =
         volumeToGrid(data.volume, elevIdx, fieldForProduct(product.id)) ??
         volumeToGrid(data.volume, 0, fieldForProduct(product.id));
-      if (!g) throw new Error('基数据体无有效数据');
+      if (!g) throw new UploadFileError('empty', '基数据体无有效数据（该文件可能已损坏）');
       grid = g;
       currentVolume = data.volume;
       layerElevation = elevIdx;
@@ -453,6 +505,9 @@ export function useRadarScreen(screenId: number) {
     layerRange = sc.valueRange ?? null;
     // 数据区域可能与当前视野不同，重新定位到新数据范围
     fitToGrid(grid);
+    // 合成兜底的上传文件同样要挂警示：此前只有服务器取数路径提示“示意数据”，
+    // 上传路径完全静默，而 AGENTS.md 明确该标记禁止用于业务判断
+    setScreenSynthetic(screenId, grid.isSynthetic === true);
     // 状态栏同时显示文件名，便于多屏 / 多文件时区分数据来源
     setScreenStatus(screenId, '上传数据 · ' + label);
   }
@@ -478,14 +533,24 @@ export function useRadarScreen(screenId: number) {
       if (token !== refreshToken) return;
       applyParsedData(data, file.name);
       setScreenLoading(screenId, false);
-      ElMessage.success(`文件识别成功：${file.name}`);
+      // 合成兜底的文件虽然“识别成功”，画面却不是真实数据 → 用警告而不是成功提示
+      if (screen.value?.synthetic) {
+        ElMessage.warning(`文件已加载但未能真实解码（画面为示意数据）：${file.name}`);
+      } else {
+        ElMessage.success(`文件识别成功：${file.name}`);
+      }
     } catch (e) {
       // 过期上传的失败提示同样不应打扰当前操作（新操作负责管理 loading）
       if (token !== refreshToken) return;
       setScreenLoading(screenId, false);
       console.error('[RadarScreen] 上传文件识别失败：', e);
-      setScreenStatus(screenId, '文件格式不符');
-      ElMessage.error(e instanceof Error ? e.message : '文件格式不符合预设格式');
+      // 按原因分别提示：文件过大 / 文件损坏 / 格式不符 / 无有效数据，
+      // 一律显示“文件格式不符”会让用户把容量或损坏问题当成格式问题去转换
+      setScreenStatus(
+        screenId,
+        e instanceof UploadFileError ? UPLOAD_ERROR_STATUS[e.reason] : '上传失败'
+      );
+      ElMessage.error(e instanceof Error ? e.message : '上传文件解析失败');
     }
   }
 

@@ -25,7 +25,8 @@ import type { SharedTask } from './radarCache';
 import { clearFallbackBuffers, loadGrid, loadVolume } from './radarSource';
 
 // —— 兼容导出：调用方继续从 radarApi 导入 ——
-export { RadarFileMissingError, parseUploadedFile } from './radarSource';
+export { RadarFileMissingError, UploadFileError, parseUploadedFile } from './radarSource';
+export type { UploadErrorReason } from './radarSource';
 export { buildFileMetaFromTemplate, fetchRadarFileList } from './radarManifest';
 
 /* ───────────────────────── 网格缓存 ───────────────────────── */

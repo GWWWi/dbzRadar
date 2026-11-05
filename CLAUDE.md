@@ -22,6 +22,64 @@
 
 # 迭代变更日志（按时间倒序）
 
+【2026-11-05 本轮改动（提示信息优化第 1 批：修正误导/缺失提示 + 版本提示去重）】
+
+1. 修改文件：`src/store/appStore.ts`、`src/components/ScreenHeader.vue`、`src/styles.css`、
+   `src/composables/useRadarScreen.ts`、`src/api/radarSource.ts`、`src/api/radarApi.ts`、
+   `src/utils/versionCheck.ts`、`docs/USER_GUIDE.md`
+
+2. 修改目的：处理上一轮评审的 P0 项——「示意数据」在上传路径静默丢失、上传失败一律报
+   「文件格式不符」、仅上传模式切时次时空白且无解释、「该时次无数据」不给可用时次、
+   版本更新提示每 5 分钟重复弹。
+
+3. 关键规则沉淀：
+   - `ScreenState` 新增 `synthetic` + `setScreenSynthetic()`：★ 示意数据警示必须独立于 `status` ★
+     数据来源标签（`上传数据 · 文件名`）与该警示需要同时存在，单字符串槽位必然丢一个。
+     屏头渲染为红底 `.screen-synth` 标记（title 写明“禁止用于业务判断”），
+     `clearLayer()` 内必须同步撤下标记，否则空屏仍挂红标。
+   - 新增 `UploadFileError(reason: 'size'|'decode'|'format'|'empty')`（`api/radarSource.ts`，
+     经 `radarApi` 转出）：屏头状态按原因映射为「文件过大 / 文件损坏 / 文件格式不符 / 无有效数据」，
+     未知错误归「上传失败」。禁止再把所有上传异常写成「文件格式不符」。
+   - `applyParsedData` 同时写入 `synthetic` 与 `上传数据 · 文件名`；上传成功提示按
+     `screen.synthetic` 分流为 `ElMessage.warning`（未能真实解码）/ `success`。
+   - upload 模式切时次：`clearLayer()` 后必须给文案「仅上传模式：点屏头「上传」加载文件」，
+     空白画面不得无解释。
+   - `noDataStatus()` / `nearestAvailableLabel()`：清单模式下「该时次无数据（最近可用 MM-DD HH:mm:ss）」；
+     ★ 模板模式（`fileUrlTemplate`）一律不给“最近可用” ★ 模板地址是算出来的，给了就是臆测。
+   - `versionCheck`：`warnedVersion` 去重，同一版本只弹一次「请按 Ctrl+F5」，
+     修复每 5 分钟 / 每次切回前台重复弹（该分支受 sessionStorage 保护，永不刷新）。
+   - `docs/USER_GUIDE.md`：状态表补齐 4 个上传失败原因 + 仅上传模式提示；修正 `.bz2`
+     口径（已支持 `.bin.bz2`/`.m4.bz2`，浏览器内解压，不再要求先手工解压）。
+
+4. 验证方式：`npx vue-tsc --noEmit -p tsconfig.json` 通过；`npm test` 10 文件 73 用例全通过。
+   ⚠ 以下需浏览器人工确认（纯 UI 分支，无单测覆盖）：① 上传旧格式 RSTM → 红标「示意数据」
+   与「上传数据 · 文件名」同时可见；② upload 模式切时次 → 出现模式提示；③ 清单模式拖到无文件
+   时次 → 状态带「最近可用」；④ 上传 >200MB 文件 → 状态「文件过大」。
+
+【2026-11-05 本轮改动（提示信息系统梳理：只评审，无代码变更）】
+
+1. 修改文件：无（仅评审；结论落本文档，业务代码未改）
+
+2. 修改目的：全面梳理用户可见提示（屏头状态 / ElMessage / tooltip / 面板与空态文案 / 控制台日志）
+   与文档口径的一致性，形成分级优化清单供后续分批实施。
+
+3. 关键规则沉淀（本轮确认的问题，实施时按此修）：
+   - 屏头状态文案 7 处字符串散落在 `useRadarScreen.ts`，建议集中到 `src/constants/messages.ts`
+     单一来源，同步 `docs/USER_GUIDE.md` §6 状态对照表，避免措辞漂移。
+   - `ScreenState.status` 一个字段同时承载「数据来源标签」与「运行状态」：
+     上传的合成/旧格式 RSTM（`isSynthetic=true`）只能显示「上传数据 · 文件名」，
+     无法同时给出「示意数据」警示 —— 而 `AGENTS.md` 明确该标记禁止用于业务判断。
+   - `applyParsedData` 未检查 `grid.isSynthetic` → 上传路径丢失「示意数据」提示（服务器取数路径有）。
+   - `onUpload` 把所有异常都映射为「文件格式不符」，>200MB、`基数据体无有效数据` 等原因被误标为格式问题。
+   - `dataSourceMode=upload` 切时次只 `clearLayer()` + `status=''`，画面空白且无任何解释文案。
+   - `versionCheck` 的「Ctrl+F5」分支未做去重 → 每 5 分钟 / 每次切回前台重复弹同一条错误。
+   - `FolderFiles` 空态「下次打开仍会记住」与下方「下次打开需重新选择文件夹」在 http 环境自相矛盾。
+   - 空时间轴显示「1 / 0 时次」；坐标展示硬编码 `°N/°E`，负经度（西经）语义错误。
+   - 文档漂移：`docs/USER_GUIDE.md` 仍写「`.bz2` 不支持 / 要先解压」，代码已支持浏览器端解压（`accept=".bin,.m4,.bz2"`）。
+   - 控制台前缀已与文件不符（`useRadarScreen` 打 `[RadarScreen]`、`baseMap` 打 `[mapManager]`），排查时误导。
+
+4. 验证方式：只读评审，`npx vue-tsc` / `npm test` 不受影响；优化项待批准后分批实施。
+
 【2026-11-04 本轮改动（补充：恢复按钮可见性说明与环境提示）】
 
 1. 修改文件：`src/components/FolderFiles.vue`、`src/styles.css`

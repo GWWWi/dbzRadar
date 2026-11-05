@@ -42,6 +42,13 @@ export interface ScreenState {
   /** 展示用状态文本（'加载中…'/'该时次无数据' 等，空串表示空闲） */
   status: string;
   /**
+   * 本屏画面是否为“示意数据”（文件未能真实解码，画面由合成兜底生成）。
+   * ★ 必须独立于 status ★ 数据来源标签（如「上传数据 · a.bin」）与这条警示
+   *   需要同时显示，塞进同一个字符串会丢掉其中一个；屏头渲染为红色标记，
+   *   业务上禁止用于任何判断（见 docs/USER_GUIDE.md）。
+   */
+  synthetic: boolean;
+  /**
    * 是否正在取数/解析（播放避让用）。
    * ★ 不要用 status 字符串判断加载态：文案会变，且“识别中…”等状态也属于忙。
    */
@@ -108,6 +115,7 @@ function createScreens(n: number): ScreenState[] {
     productId: 'dBZ',
     time: '',
     status: '',
+    synthetic: false,
     loading: false,
     smooth: false,
     valueRange: null, // 默认全范围（不裁剪色标）
@@ -163,6 +171,7 @@ export function setLayout(layout: LayoutType): void {
       productId: 'dBZ',
       time: '',
       status: '',
+      synthetic: false,
       loading: false,
       smooth: false,
       valueRange: null,
@@ -179,6 +188,7 @@ export function setLayout(layout: LayoutType): void {
         productId: base.productId,
         time: base.time,
         status: '',
+        synthetic: false,
         loading: false,
         smooth: base.smooth,
         valueRange: base.valueRange ? { ...base.valueRange } : null,
@@ -368,6 +378,15 @@ export function setScreenStatus(id: number, status: string): void {
 }
 
 /**
+ * 标记本屏画面是否为示意数据（合成兜底）。
+ * ★ 与 setScreenStatus 分开 ★ 该警示必须能与数据来源标签（上传文件名）同时显示。
+ */
+export function setScreenSynthetic(id: number, synthetic: boolean): void {
+  const s = findScreen(id);
+  if (s) s.synthetic = synthetic;
+}
+
+/**
  * 设置某屏“正在取数/解析”标记。
  * 播放避让应读本字段，而不是比较 status 文案。
  */
@@ -421,6 +440,7 @@ const EMPTY_SCREEN: ScreenState = {
   productId: 'dBZ',
   time: '',
   status: '',
+  synthetic: false,
   loading: false,
   smooth: false,
   valueRange: null,

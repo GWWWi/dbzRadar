@@ -24,6 +24,7 @@ import {
 } from '../store/appStore';
 import { buildTimelineTimes } from '../api/configApi';
 import { compact12ToISO, formatShortTime, isoToCompact, isoToMs } from '../utils/datetime';
+import { TIMELINE_MSG } from '../constants/messages';
 import TimeAxis from './TimeAxis.vue';
 
 /** 当前激活屏时刻在时间轴上的索引（决定步进位置） */
@@ -161,7 +162,7 @@ defineExpose({ step });
       v-model="jumpValue"
       class="timeline-jump"
       type="datetime"
-      title="选择时次"
+      title="选择时次：按所选分钟精确匹配文件，该分钟无文件会提示「该时次无数据」；想自动吸附最近时次请拖拽刻度轴"
       format="YYYY-MM-DD HH:mm"
       value-format="YYYYMMDDHHmm"
       :clearable="false"
@@ -169,6 +170,17 @@ defineExpose({ step });
     />
 
     <span class="timeline-time">{{ formatShortTime(activeScreen?.time ?? '', true) }}</span>
-    <span class="timeline-count">{{ currentIndex + 1 }} / {{ timelineTimes.length }} 时次</span>
+    <!-- 空时间轴不能显示“1 / 0 时次”（自相矛盾），改为可排查的空态提示 -->
+    <span
+      class="timeline-count"
+      :class="{ 'timeline-count--empty': !timelineTimes.length }"
+      :title="timelineTimes.length ? '' : TIMELINE_MSG.emptyTip"
+    >
+      {{
+        timelineTimes.length
+          ? `${currentIndex + 1} / ${timelineTimes.length} 时次`
+          : TIMELINE_MSG.empty
+      }}
+    </span>
   </footer>
 </template>

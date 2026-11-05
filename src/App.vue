@@ -65,9 +65,11 @@ onMounted(async () => {
         setFiles(await fetchRadarFileList(config.fileListUrl));
       }
       if (mode === 'latest' && !config.fileUrlTemplate) {
+        // 只写控制台的话界面上表现为“每个时次都无数据”，现场看不出原因 → 必须可见
         console.warn(
           '[App] dataSourceMode=latest 需要配置 fileUrlTemplate，否则无法据最新时间定位文件'
         );
+        ElMessage.warning(APP_MSG.latestNoTemplate);
       }
     } else {
       // 回退：无配置文件 → 时间轴取自清单文件时刻（本地 demo 行为；mode 必为 both）

@@ -843,6 +843,12 @@ button {
   font-size: 12px;
 }
 
+/* 空时间轴提示（一个时次都没有）：橙色提示，避免被当成正常状态 */
+.timeline-count--empty {
+  color: #ffb45e;
+  cursor: help;
+}
+
 /* 宽度保证文字完整显示（"2022-04-12 00:00" + 箭头/图标） */
 .timeline-dt {
   width: 185px;

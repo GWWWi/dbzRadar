@@ -81,7 +81,8 @@ async function onPickFolder(): Promise<void> {
       const handle = await window.showDirectoryPicker({ id: 'radar-folder', mode: 'read' });
       const items = await collectDirFiles(handle);
       if (!addLocalFolder(items, handle)) {
-        ElMessage.warning(FOLDER_MSG.noRadarFile);
+        // grouping：重复选到空目录时合并为一条提示
+        ElMessage.warning({ message: FOLDER_MSG.noRadarFile, grouping: true });
         return;
       }
       syncFromStore();
@@ -120,7 +121,7 @@ function onFolderChange(e: Event): void {
     .map((f) => ({ file: f, relPath: relPathOf(f) }));
 
   if (!addLocalFolder(items)) {
-    ElMessage.warning(FOLDER_MSG.noRadarFile);
+    ElMessage.warning({ message: FOLDER_MSG.noRadarFile, grouping: true });
     return;
   }
   syncFromStore();
@@ -308,8 +309,9 @@ onMounted(async () => {
       当前环境不支持目录授权记忆（需 https 或 localhost），下次打开需重新选择文件夹。
     </p>
 
+    <!-- 空态与上方环境提示保持一致：无授权记忆时不能说“下次仍会记住” -->
     <p v-if="groups.length === 0" class="folder-empty">
-      尚未选择文件夹（可多次选择累加，下次打开仍会记住）
+      {{ canAutoRestore ? FOLDER_MSG.empty : FOLDER_MSG.emptyNoRestore }}
     </p>
 
     <!-- 目录层级树：每个顶层文件夹是一个父级节点，父级后可删除 -->

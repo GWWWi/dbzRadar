@@ -239,7 +239,7 @@ export function setScreenProduct(id: number, productId: string): void {
   const s = findScreen(id);
   if (!s || s.productId === productId) return;
   if (!productExists(productId)) {
-    console.warn(`[store] 忽略未知产品：${productId}`);
+    console.warn(`[appStore] 忽略未知产品：${productId}`);
     return;
   }
   s.productId = productId;
@@ -443,7 +443,7 @@ export function getProductByIdSafe(id: string): RadarProduct {
   // 原实现静默 `?? appState.products[0]`，调用方无法区分「命中」与「回退」，
   // 于是屏头、图例、色标用的是兜底产品，而 sc.productId 仍是旧 id，
   // 三者口径不一致且难以排查。
-  console.warn(`[store] 未知产品 ${id}，回退到默认产品`);
+  console.warn(`[appStore] 未知产品 ${id}，回退到默认产品`);
   const fallback = appState.products[0] ?? getStaticProductList()[0];
   if (fallback) return fallback;
 

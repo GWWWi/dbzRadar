@@ -360,6 +360,7 @@ onBeforeUnmount(() => {
   <canvas
     ref="canvasRef"
     class="time-axis"
+    title="拖拽平移 / 点击跳转到最近时次 / 滚轮缩放；顶部绿色刻度=有数据的时次"
     @pointerdown="onPointerDown"
     @pointermove="onPointerMove"
     @pointerup="onPointerUp"

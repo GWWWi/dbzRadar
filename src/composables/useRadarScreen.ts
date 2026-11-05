@@ -44,8 +44,15 @@ import {
 } from '../api/radarApi';
 import type { UploadErrorReason } from '../api/radarApi';
 import { formatShortTime, isoToMs } from '../utils/datetime';
-// 提示文案统一走 constants/messages（屏头状态 / 上传结果），禁止在这里再写字面量
-import { noDataText, STATUS, UPLOAD_MSG, uploadDataLabel } from '../constants/messages';
+import { formatLatLon } from '../utils/coords';
+// 提示文案统一走 constants/messages（屏头状态 / 上传结果 / 查询标签），禁止在这里再写字面量
+import {
+  noDataText,
+  QUERY_LABEL,
+  STATUS,
+  UPLOAD_MSG,
+  uploadDataLabel
+} from '../constants/messages';
 import { volumeToGrid } from '../parse/cinradVolume';
 // 取值逻辑（字段映射 / 原始值 / 九点均值 / 可见性）已抽成纯函数，便于单测
 import { fieldForProduct, queryValue } from '../parse/valueQuery';
@@ -386,7 +393,7 @@ export function useRadarScreen(screenId: number) {
         setScreenStatus(screenId, '');
         return;
       }
-      console.error('[RadarScreen] 渲染失败：', e);
+      console.error('[useRadarScreen] 渲染失败：', e);
       // 失败时保留旧画面会让用户误读成“该时次的数据”，因此一并清空
       clearLayer();
       // 404（模板模式时间轴时次未必有文件）→ 提示无数据（warn）；其余（含超时）→ 加载失败（error）
@@ -402,18 +409,22 @@ export function useRadarScreen(screenId: number) {
    * 在指定经纬度取本屏数值：地图弹窗 + 返回面板结果。
    *
    * 取值与判定全部在 `queryValue`（纯函数，可单测）里完成；
-   * 这里只保留两件 UI 相关的事：地图弹窗与消息提示。
+   * 这里只负责地图弹窗（面板展示由 CoordinateQuery 负责）。
    *
    * 结果同时包含两种数值：
    *   - **原始值**：中心库最近邻（保峰值，与图面颜色同口径）；
    *   - **九点均值**：中心 + 周围 8 个库的平均（抑噪，但会压低峰值）。
    * 图上透明（低于阈值 / 超出色标范围）时仍然给出数值并注明原因。
    *
-   * @param lat    纬度
-   * @param lon    经度
-   * @param notify 需要提示时传 true（坐标查询）；点击地图保持静默
+   * ★ 不再额外弹 ElMessage ★
+   *   坐标查询面板已经把原始值 / 九点均值 / 原因全部写在屏上，
+   *   再弹一条信息只是重复同一句话（且弹窗内容与“无回波”措辞互相矛盾）；
+   *   点击地图则保持静默，避免播放时每点一次都刷提示。
+   *
+   * @param lat 纬度
+   * @param lon 经度
    */
-  function showValueAt(lat: number, lon: number, notify = false): RadarQueryResult | null {
+  function showValueAt(lat: number, lon: number): RadarQueryResult | null {
     if (!map) return null;
 
     const product = getProductByIdSafe(screen.value?.productId ?? 'dBZ');
@@ -431,28 +442,23 @@ export function useRadarScreen(screenId: number) {
     // —— 地图弹窗：展示可见值（优先）或原始值 ——
     if (result.shown === null) {
       map.closePopup();
-      if (notify) ElMessage.warning('该位置无数据（超出数据范围或无回波）');
       return result;
     }
 
-    const unit = product.unit ? ' ' + product.unit : '';
     const lines = [`${result.shown.toFixed(1)} ${product.unit}`];
     if (result.mean !== null) {
       lines.push(
-        `9点均值 ${result.mean.toFixed(1)} ${product.unit}（${result.validCount}/${result.totalCount}）`
+        `${QUERY_LABEL.mean9} ${result.mean.toFixed(1)} ${product.unit}（${result.validCount}/${result.totalCount}）`
       );
     }
     if (result.note) lines.push(`<span style="color:#ffb454">${result.note}</span>`);
-    lines.push(`${lat.toFixed(3)}°N, ${lon.toFixed(3)}°E`);
+    // 经纬度统一走 utils/coords：负值显示为 S / W，不出现 “-100.000°E”
+    lines.push(formatLatLon(lat, lon));
 
     L.popup({ closeButton: false, className: 'value-popup' })
       .setLatLng([lat, lon])
       .setContent(lines.join('<br>'))
       .openOn(map as unknown as L.Map);
-
-    if (notify && result.note) {
-      ElMessage.info(`该位置 ${result.shown.toFixed(1)}${unit}：${result.note}`);
-    }
 
     return result;
   }
@@ -535,17 +541,18 @@ export function useRadarScreen(screenId: number) {
       if (token !== refreshToken) return;
       applyParsedData(data, file.name);
       setScreenLoading(screenId, false);
-      // 合成兜底的文件虽然“识别成功”，画面却不是真实数据 → 用警告而不是成功提示
+      // 合成兜底的文件虽然“识别成功”，画面却不是真实数据 → 用警告而不是成功提示。
+      // grouping：重复上传同一文件时合并为一条（“1+”），不会叠成一列
       if (screen.value?.synthetic) {
-        ElMessage.warning(UPLOAD_MSG.synthetic(file.name));
+        ElMessage.warning({ message: UPLOAD_MSG.synthetic(file.name), grouping: true });
       } else {
-        ElMessage.success(UPLOAD_MSG.ok(file.name));
+        ElMessage.success({ message: UPLOAD_MSG.ok(file.name), grouping: true });
       }
     } catch (e) {
       // 过期上传的失败提示同样不应打扰当前操作（新操作负责管理 loading）
       if (token !== refreshToken) return;
       setScreenLoading(screenId, false);
-      console.error('[RadarScreen] 上传文件识别失败：', e);
+      console.error('[useRadarScreen] 上传文件识别失败：', e);
       // 按原因分别提示：文件过大 / 文件损坏 / 格式不符 / 无有效数据，
       // 一律显示“文件格式不符”会让用户把容量或损坏问题当成格式问题去转换
       setScreenStatus(
@@ -553,7 +560,10 @@ export function useRadarScreen(screenId: number) {
         e instanceof UploadFileError ? UPLOAD_ERROR_STATUS[e.reason] : STATUS.uploadFailed,
         'error'
       );
-      ElMessage.error(e instanceof Error ? e.message : UPLOAD_MSG.failed);
+      ElMessage.error({
+        message: e instanceof Error ? e.message : UPLOAD_MSG.failed,
+        grouping: true
+      });
     }
   }
 

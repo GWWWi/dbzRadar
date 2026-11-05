@@ -3,7 +3,7 @@
 
   职责：
     - 经纬度输入、格式容错与范围校验；
-    - 调用父组件传入的 sample(lat, lon, notify) 取样；
+    - 调用父组件传入的 sample(lat, lon) 取样；
     - 展示原始值 / 9 点均值 / 不可见原因。
 
   ★ 取样与地图弹窗由父组件负责 ★
@@ -12,10 +12,15 @@
 <script setup lang="ts">
 import { ref } from 'vue';
 import type { RadarQueryResult } from '../types';
+import { QUERY_LABEL } from '../constants/messages';
+import { formatLatLon } from '../utils/coords';
 
 const props = defineProps<{
-  /** 父组件取样入口：返回面板结果；地图弹窗也由该函数内部完成 */
-  sample: (lat: number, lon: number, notify: boolean) => RadarQueryResult | null;
+  /**
+   * 父组件取样入口：返回面板结果；地图弹窗也由该函数内部完成。
+   * ★ 不再传 notify 开关 ★ 面板本身就展示全部结果，父组件无需再额外弹提示。
+   */
+  sample: (lat: number, lon: number) => RadarQueryResult | null;
 }>();
 
 /** 经度输入 */
@@ -71,7 +76,7 @@ function onQueryClick(): void {
   }
 
   queryError.value = '';
-  queryResult.value = props.sample(lat, lon, true);
+  queryResult.value = props.sample(lat, lon);
 }
 </script>
 
@@ -104,12 +109,12 @@ function onQueryClick(): void {
 
     <div v-if="queryResult" class="coord-query-result">
       <div>
-        原始：
+        {{ QUERY_LABEL.raw }}：
         <b>{{ queryResult.center === null ? '无数据' : queryResult.center.toFixed(1) }}</b>
         {{ queryResult.unit }}
       </div>
       <div>
-        9点均值：
+        {{ QUERY_LABEL.mean9 }}：
         <b>{{ queryResult.mean === null ? '—' : queryResult.mean.toFixed(1) }}</b>
         {{ queryResult.mean === null ? '' : queryResult.unit }}
         <span class="coord-query-count" v-if="queryResult.totalCount">
@@ -117,8 +122,9 @@ function onQueryClick(): void {
         </span>
       </div>
       <div v-if="queryResult.note" class="coord-query-note">{{ queryResult.note }}</div>
+      <!-- 经纬度统一走 utils/coords：负值显示为 S / W -->
       <div class="coord-query-coord">
-        {{ queryResult.lat.toFixed(4) }}°N, {{ queryResult.lon.toFixed(4) }}°E
+        {{ formatLatLon(queryResult.lat, queryResult.lon, 4) }}
       </div>
     </div>
   </div>

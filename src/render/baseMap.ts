@@ -229,7 +229,7 @@ export async function applyBaseMap(map: LMap, mode: BaseMapMode): Promise<void> 
     baseLayers.set(map, layers);
   } catch (e) {
     // 保持海洋色（用户可见异常），不静默混用天地图掩盖问题
-    console.error('[mapManager] 国界底图加载失败：', e);
+    console.error('[baseMap] 国界底图加载失败：', e);
   }
 }
 

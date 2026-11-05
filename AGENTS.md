@@ -49,6 +49,7 @@ src/
   constants.ts                 ★ 跨层常量：统一缺测哨兵 UNDEF
   mapBorder/                   ★ 国界底图数据：worldGJ(179 国) / chinaGJ(全国) / chinaSJ(42 省)，合计约 4MB
   utils/datetime.ts            ★ 时间格式转换唯一实现：msToISO/msToText/formatShortTime/isoToMs/isoToCompact/compact12ToISO/digits14ToISO
+  utils/coords.ts              ★ 经纬度展示格式化：formatLat/formatLon/formatLatLon（负值 → S/W；禁止组件里手拼 °N/°E）
   utils/http.ts                ★ fetchWithTimeout（默认 10s）+ FetchTimeoutError：所有网络请求统一走这里
   utils/range.ts               ★ 色标范围：isValueInRange/isValueVisible/valueRangeKey/rangeFromStopIndex/stopIndexFromRange（渲染、取值、图例共用同一口径）
   utils/gridSample.ts          ★ 网格单点取值（纯函数）：sampleGridRaw（只判边界/缺测）/sampleGridValue（可见性口径）；radarRenderer 与 valueQuery 共用，避免两套口径漂移

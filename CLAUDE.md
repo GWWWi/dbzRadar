@@ -22,6 +22,45 @@
 
 # 迭代变更日志（按时间倒序）
 
+【2026-11-05 本轮改动（提示信息优化第 3 批：去除冗余提示 + 空态/措辞/坐标统一）】
+
+1. 修改文件：`src/utils/coords.ts`（新增）、`src/utils/coords.test.ts`（新增）、
+   `src/constants/messages.ts`、`src/composables/useRadarScreen.ts`、`src/components/CoordinateQuery.vue`、
+   `src/components/Timeline.vue`、`src/components/TimeAxis.vue`、`src/components/ScreenHeader.vue`、
+   `src/components/FolderFiles.vue`、`src/App.vue`、`src/store/appStore.ts`、`src/render/baseMap.ts`、
+   `src/styles.css`、`docs/USER_GUIDE.md`、`public/data/dataSourceMode.md`、`AGENTS.md`
+
+2. 修改目的：清掉“同一件事说三遍”的重复提示，补齐三处空态/静默分支的说明，
+   统一坐标与术语写法，并把控制台日志前缀改回与文件同名（便于按日志定位）。
+
+3. 关键规则沉淀：
+   - ★ 坐标查询不再弹 ElMessage ★ `showValueAt(lat, lon)` 去掉 `notify` 参数：
+     面板已完整展示原始值 / 9 点均值 / 原因，弹窗只负责图上定位；
+     原实现“弹窗 + 面板 + toast”三处重复，且 toast 里「无回波」与「低于显示阈值」混为一谈。
+     地图点击保持静默（无数据只关弹窗）。
+   - ★ 经纬度展示统一走 `utils/coords.ts` 的 `formatLatLon` ★
+     原写法 `${lat}°N, ${lon}°E` 在负值下会输出 `-100.000°E`（方向与符号自相矛盾）；
+     现按南北/东西半球取绝对值 + 后缀（`formatLat` / `formatLon` 可单独用）。
+   - 空时间轴：`timelineTimes` 为空时显示橙色 `无可用时次`（title 给排查指引），
+     不再显示自相矛盾的「1 / 0 时次」。
+   - `dataSourceMode=latest` 缺 `fileUrlTemplate`：除 console.warn 外必须
+     `ElMessage.warning`（此前界面表现为“每个时次都无数据”，现场看不出原因）。
+   - `FolderFiles` 空态按 `canAutoRestore` 分支：无目录授权记忆时不再说“下次打开仍会记住”
+     （与同屏环境提示矛盾）。
+   - tooltip 补关键约束：上传（`.bz2` 可直接传 / ≤200MB）、刻度轴（拖拽/点击/滚轮）、
+     时间跳转框（不吸附，无该分钟文件即「该时次无数据」）。
+   - `ElMessage` 的 `grouping: true` 用对象形式（`ElMessage.warning({ message, grouping: true })`），
+     覆盖上传与“空目录”这类可能被连点重复触发的提示。
+   - 术语：「9点均值」→「9 点均值」（面板与弹窗共用 `QUERY_LABEL`，避免两处写法不一致）。
+   - 控制台前缀必须与文件名一致：`[store]`→`[appStore]`、`[mapManager]`→`[baseMap]`、
+     `[RadarScreen]`→`[useRadarScreen]`（按日志搜文件才能搜到）。
+   - 测试：新增 `coords.test.ts`（4 组，覆盖南北纬/东西经、零值、非有限值、位数）。
+
+4. 验证方式：`npx vue-tsc --noEmit -p tsconfig.json` 通过；`npm test` **12 文件 84 用例**全通过；
+   `npm run build` 成功（9.71s，`dist/assets/index-CbqaZq7H.js` 110.20 kB，CSS 389.13 kB）。
+   ⚠ 需浏览器人工确认：① 坐标查询只出现面板 + 地图弹窗、不再叠 toast；
+   ② 时间轴为空时显示「无可用时次」；③ 点击地图/查询的经纬度在负值下显示 S/W。
+
 【2026-11-05 本轮改动（提示信息优化第 2 批：文案集中 + 状态语气 + 配色/无障碍）】
 
 1. 修改文件：`src/constants/messages.ts`（新增）、`src/constants/messages.test.ts`（新增）、

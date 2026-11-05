@@ -115,7 +115,7 @@ function onUploadChange(e: Event): void {
     <!-- 本屏数据上传（每屏独立）：格式识别与渲染由 RadarScreen 处理 -->
     <label
       class="btn screen-upload"
-      title="上传雷达数据文件（支持 SWAN 拼图 / CINRAD RSTM / MICAPS m4）"
+      title="上传雷达数据文件（SWAN 拼图 / CINRAD RSTM / MICAPS m4，.bz2 压缩包可直接上传；单文件 ≤200MB）"
     >
       上传
       <input type="file" accept=".bin,.m4,.bz2" hidden @change="onUploadChange" />

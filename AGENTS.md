@@ -79,7 +79,7 @@ src/
   render/mapLink.ts            多屏联动（move 经 rAF 合并）；只管理连接表，不碰底图
   render/radarRenderer.ts      ★ 核心：renderRadar(smooth,range)/updateRadarProduct/updateRadarSmooth/updateRadarRange/removeRadar/sampleGridValue/firstVisibleThreshold
   store/appStore.ts            Vue reactive 单例全局状态 + mutations（setLayout/setScreenProduct/setScreenSmooth/setScreenRange/setScreenElevations/setScreenElevation/setScreenTime/setFiles/setProducts/setPlaying/setSyncPlay/setSyncMap/setBaseMap/setActiveScreen/setScreenStatus(text,kind)/setScreenSynthetic/setScreenLoading/setTimeline(times,template)/setTimelineConfig/getProductByIdSafe）+ 状态 timeline/fileUrlTemplate/timelineConfig + computed（activeScreen/timelineTimes）；ScreenState.smooth / valueRange / elevations+elevationIndex / synthetic 每屏独立，statusKind 为状态语气（配色/播报），loading 为播放避让的忙标记
-  constants/messages.ts        ★ 用户可见提示文案唯一来源：STATUS（屏头状态）/ UPLOAD_MSG / VERSION_MSG / APP_MSG / FOLDER_MSG + noDataText/uploadDataLabel；与 docs/USER_GUIDE.md §6 状态表逐条对应
+  constants/messages.ts        ★ 用户可见提示文案唯一来源：STATUS（屏头状态）/ UPLOAD_MSG / VERSION_MSG / APP_MSG / FOLDER_MSG / QUERY_LABEL + noDataText/uploadDataLabel/querySourceOf（坐标查询的“来源与口径”说明）；与 docs/USER_GUIDE.md §6 状态表逐条对应
   composables/useRadarScreen.ts ★ 单屏地图/取数/图层状态机：建图销毁、watch 刷新、局部更新、取值（调用 parse/valueQuery）、上传
   components/
     Toolbar.vue                布局切换(1/2/4/6屏)/同步开关/地图联动开关/播放按钮

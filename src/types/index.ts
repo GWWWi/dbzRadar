@@ -87,6 +87,26 @@ export interface RadarQueryResult {
   unit: string;
   /** 说明：低于阈值 / 超出范围 / 无数据 */
   note: string;
+  /**
+   * 数据来源与取值口径说明（由 UI 层填充，取值函数不关心）。
+   * 用于回答“同一坐标换个文件为什么数值不一样”。
+   */
+  source?: RadarQuerySource;
+}
+
+/**
+ * 坐标查询结果的“数据来源 / 取值口径”说明。
+ *
+ * ★ 为什么要显式说明 ★
+ *   同一经纬度在不同文件下数值本就不同：m4 / SWAN 拼图是服务端做过多仰角合成
+ *   与平滑的**格点产品**，RSTM 是**单仰角原始基数据**；两者采样到的“体”不同，
+ *   格点产品还多一次最近邻量化。不写清楚会被当成取值 bug 反复排查。
+ */
+export interface RadarQuerySource {
+  /** 短标签（面板一行 / 弹窗一行）：如「MICAPS m4 格点（最近邻取值）」 */
+  label: string;
+  /** 完整解释（悬停 / 折叠说明展开时显示） */
+  tip: string;
 }
 
 /**
@@ -309,4 +329,9 @@ export interface RadarGrid {
   data: Float32Array;
   /** 是否为“合成兜底”网格（真实数据不可解码时为 true，UI 上会提示） */
   isSynthetic: boolean;
+  /**
+   * 数据格式（由取数 / 上传链路按内容识别后写入，解析器本身不读）。
+   * 只用于 UI 说明取值口径：格点产品走最近邻，基数据走原始径向。
+   */
+  format?: RadarFileFormat;
 }

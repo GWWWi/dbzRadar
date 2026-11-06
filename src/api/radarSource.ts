@@ -10,7 +10,7 @@
  * 依赖方向：radarSource → radarManifest（路径）/ radarCache（取消错误）/ parse。
  */
 
-import type { RadarFileMeta, RadarGrid, RstmVolume } from '../types';
+import type { RadarFileFormat, RadarFileMeta, RadarGrid, RstmVolume } from '../types';
 import { parseRSTM } from '../parse/cinradParser';
 import { parseRADAMOSAIC, isRADAMOSAIC } from '../parse/mosaicParser';
 import { isMicapsM4, parseMicapsM4 } from '../parse/micapsM4Parser';
@@ -62,8 +62,8 @@ export class UploadFileError extends Error {
  *   - kind='grid'  ：拼图 / m4 / 合成 RSTM，grid 可直接渲染（无仰角维度）。
  */
 export type UploadedRadarData =
-  | { kind: 'volume'; volume: RstmVolume }
-  | { kind: 'grid'; grid: RadarGrid };
+  | { kind: 'volume'; volume: RstmVolume; format: RadarFileFormat }
+  | { kind: 'grid'; grid: RadarGrid; format: RadarFileFormat };
 
 /**
  * 解析用户上传的雷达数据文件（自主上传功能）。
@@ -121,7 +121,7 @@ export async function parseUploadedFile(
   const magic = String.fromCharCode(...new Uint8Array(buf, 0, Math.min(4, buf.byteLength)));
   if (magic === 'RSTM') {
     const volume = parseRstmVolume(buf);
-    if (volume) return { kind: 'volume', volume };
+    if (volume) return { kind: 'volume', volume, format: 'rstm' };
   }
 
   // —— 1) MICAPS m4：用前 256 字节探测首行 "diamond 4" ——
@@ -129,17 +129,19 @@ export async function parseUploadedFile(
   if (isMicapsM4(probe)) {
     return {
       kind: 'grid',
+      format: 'm4',
       grid: parseMicapsM4(new TextDecoder('utf-8').decode(buf), { product, fallbackTime: time })
     };
   }
   // —— 2) SWAN 拼图：头部 "diamond" ——
   if (isRADAMOSAIC(buf)) {
-    return { kind: 'grid', grid: parseRADAMOSAIC(buf, { time, product }) };
+    return { kind: 'grid', format: 'mosaic', grid: parseRADAMOSAIC(buf, { time, product }) };
   }
   // —— 3) CINRAD 单站 RSTM 单层（合成兜底，永不抛错） ——
   if (magic === 'RSTM') {
     return {
       kind: 'grid',
+      format: 'rstm',
       grid: parseRSTM(buf, {
         time,
         product,
@@ -305,6 +307,8 @@ export async function loadGrid(
 
   // —— 2) 格式识别并分派解析器（魔数优先：bz2 解压后才知真实格式） ——
   const format = detectFormat(buf, meta);
+  // 实际采用的分支可能与 detectFormat 的推断不同（魔数为准），据此写回 grid.format
+  let actualFormat: RadarFileFormat = format;
   let grid: RadarGrid;
   if (format === 'm4') {
     // MICAPS 第 4 类：文本格式
@@ -313,6 +317,7 @@ export async function loadGrid(
     grid = parseMicapsM4(text, { product, fallbackTime: meta.time });
     grid.time = meta.time || grid.time;
   } else if (format === 'mosaic' || isRADAMOSAIC(buf)) {
+    actualFormat = 'mosaic';
     // SWAN 雷达三维拼图：取默认高度层的反射率。
     // 先不传 time，让解析器从文件头取时刻，再与清单交叉校验——原实现
     // 无条件以文件名为准，实测出现过「文件名 2024、文件头 2022」的数据
@@ -334,6 +339,7 @@ export async function loadGrid(
       grid.time = listTime || headerTime;
     }
   } else {
+    actualFormat = 'rstm';
     // CINRAD 单站 RSTM（含合成兜底，永不抛错）
     grid = parseRSTM(buf, {
       time: meta.time,
@@ -344,5 +350,7 @@ export async function loadGrid(
     grid.time = meta.time || grid.time;
   }
 
+  // 记录按内容识别出的真实格式：UI 据此说明取值口径（最近邻 vs 原始径向）
+  grid.format = actualFormat;
   return grid;
 }

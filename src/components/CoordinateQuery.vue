@@ -12,7 +12,7 @@
 <script setup lang="ts">
 import { ref } from 'vue';
 import type { RadarQueryResult } from '../types';
-import { QUERY_LABEL } from '../constants/messages';
+import { QUERY_DIFF_TIP, QUERY_LABEL } from '../constants/messages';
 import { formatLatLon } from '../utils/coords';
 
 const props = defineProps<{
@@ -122,10 +122,27 @@ function onQueryClick(): void {
         </span>
       </div>
       <div v-if="queryResult.note" class="coord-query-note">{{ queryResult.note }}</div>
+      <!--
+        数据来源 / 取值口径：不同格式（m4 / 拼图 / RSTM 基数据）同点数值本就不同，
+        不标明会被当成取值 bug。悬停看完整解释。
+      -->
+      <div
+        v-if="queryResult.source"
+        class="coord-query-source"
+        :title="queryResult.source.tip"
+      >
+        {{ QUERY_LABEL.source }}：{{ queryResult.source.label }}
+      </div>
       <!-- 经纬度统一走 utils/coords：负值显示为 S / W -->
       <div class="coord-query-coord">
         {{ formatLatLon(queryResult.lat, queryResult.lon, 4) }}
       </div>
     </div>
+
+    <!-- 常驻说明（默认折叠，不占地方）：解释“换个文件数值为什么不一样” -->
+    <details class="coord-query-help">
+      <summary>不同文件结果为何不同？</summary>
+      <p>{{ QUERY_DIFF_TIP }}</p>
+    </details>
   </div>
 </template>

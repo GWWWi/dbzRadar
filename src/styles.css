@@ -591,6 +591,36 @@ button {
   color: #6f8399;
 }
 
+/* 数据来源一行：虚线下划线 + help 光标，暗示悬停可看完整解释 */
+.coord-query-source {
+  margin-top: 2px;
+  color: #7f93a9;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-decoration: underline dotted rgba(127, 147, 169, 0.55);
+  text-underline-offset: 2px;
+  cursor: help;
+}
+
+/* 常驻折叠说明：默认收起（只占一行 “不同文件结果为何不同？”），展开看差异原因 */
+.coord-query-help {
+  margin-top: 4px;
+  font-size: 11px;
+  color: #6f8399;
+}
+
+.coord-query-help summary {
+  cursor: pointer;
+  outline: none;
+}
+
+.coord-query-help p {
+  margin: 3px 0 0;
+  line-height: 1.5;
+  color: #8fa3ba;
+}
+
 .legend-reset {
   padding: 0;
   border: none;

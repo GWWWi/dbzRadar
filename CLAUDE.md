@@ -23,6 +23,39 @@
 
 # 迭代变更日志（按时间倒序）
 
+【2026-11-06 本轮改动（坐标查询增加“数据来源 / 取值口径”说明：不同文件后缀结果不同）】
+
+1. 修改文件：`src/types/index.ts`、`src/constants/messages.ts`、`src/constants/messages.test.ts`、
+   `src/api/radarSource.ts`、`src/composables/useRadarScreen.ts`、`src/components/CoordinateQuery.vue`、
+   `src/styles.css`、`docs/USER_GUIDE.md`、`AGENTS.md`
+
+2. 修改目的：同一点在不同文件（`.m4` / `.bin` 拼图 / `.bin` 基数据 / `.bin.bz2`）下数值不同，
+   现场会当成取值 bug 反复排查。现把“这个值是怎么取来的”随结果一起显示，并给出差异原因说明。
+
+3. 关键规则沉淀：
+   - `RadarGrid.format?: RadarFileFormat`：由取数链路按**内容识别**结果写入
+     （`loadGrid` 用 `actualFormat`，因为魔数可能推翻清单/文件名的推断；`parseUploadedFile`
+     返回值也带 `format`）。解析器本身不读该字段，只服务 UI 说明。
+   - `RadarQueryResult.source?: RadarQuerySource{label,tip}`：由 `useRadarScreen.showValueAt`
+     填充（只有 composable 能拿到 volume / 仰角 / 压缩标记），纯取值函数 `queryValue` 不关心。
+     ★ 面板与地图弹窗必须显示同一 label ★（两处口径不同会被当成两种算法）。
+   - `querySourceOf()`（`constants/messages.ts`）是唯一装配处，优先级：
+     合成兜底 > RSTM 基数据（带当前仰角）> m4 > 拼图 > RSTM 单层 > 未知；
+     `.bz2` 追加“数值与解压后完全一致”，避免把压缩包当成另一种数据源。
+   - UI：面板结果多一行 `来源：…`（虚线下划线，悬停看 tip）；面板底部常驻
+     `<details>不同文件结果为何不同？`（默认折叠，不占地方）；地图弹窗加一行灰字来源。
+   - 文档：`USER_GUIDE` §4.5 步骤 5 + FAQ Q11 + §11 改“四条口径”，明确
+     “格点产品 vs 单仰角基数据”差异与“比对需同时次 + 同仰角 + 同字段”。
+   - 术语约定：m4/拼图 = **格点产品**（最近邻、约 1km 量化、无 9 点均值）；
+     RSTM = **基数据**（原始径向、无量化、有仰角维度）。
+
+4. 验证方式：`npx vue-tsc --noEmit -p tsconfig.json` 通过；`npm test` **12 文件 89 用例**全通过
+   （新增 querySourceOf 5 个用例：m4 / 拼图 / 基数据带仰角 / 合成兜底优先 / .bz2 追加说明）；
+   `npm run build` 成功（11.21s，`dist/assets/index-BMwNjSZ7.js` 111.61 kB，CSS 389.51 kB）。
+   ⚠ 需浏览器人工确认：① 上传 m4 与 bz2 基数据后查询同一坐标，来源行分别为
+   「MICAPS m4 格点（最近邻取值）」与「RSTM 基数据 x.x°（原始径向）」；
+   ② 面板底部折叠说明可展开；③ 弹窗来源行不挤压数值。
+
 【2026-11-06 本轮改动（新增渲染链路说明文档：点击产品 → 解码 → 渲染 → 值→颜色）】
 
 1. 修改文件：`docs/RENDER_FLOW.md`（新增）、`CLAUDE.md`（项目基础信息补文档索引 + 本条日志）

@@ -49,6 +49,7 @@ import { formatLatLon } from '../utils/coords';
 import {
   noDataText,
   QUERY_LABEL,
+  querySourceOf,
   STATUS,
   UPLOAD_MSG,
   uploadDataLabel
@@ -59,7 +60,13 @@ import { fieldForProduct, queryValue } from '../parse/valueQuery';
 import { ElMessage } from 'element-plus';
 import * as L from 'leaflet';
 import type { LMap, LPixelLayer } from '@quickearth/leaflet';
-import type { RadarGrid, RadarQueryResult, RstmVolume, ValueRange } from '../types';
+import type {
+  RadarFileFormat,
+  RadarGrid,
+  RadarQueryResult,
+  RstmVolume,
+  ValueRange
+} from '../types';
 import { registerUploadHandler, unregisterUploadHandler } from './uploadRouter';
 import { getLocalFile } from '../api/localFiles';
 
@@ -125,6 +132,10 @@ export function useRadarScreen(screenId: number) {
   let layerThreshold = Number.NEGATIVE_INFINITY; // 当前图层渲染时的弱值阈值
   let layerSmooth = false;                       // 当前图层渲染时的平滑开关（每屏独立）
   let layerRange: ValueRange | null = null;      // 当前图层使用的色标数值范围（null=全范围）
+  /** 当前图层的真实数据格式（按内容识别）：仅用于坐标查询说明取值口径 */
+  let layerFormat: RadarFileFormat | null = null;
+  /** 当前文件是否为 .bz2 压缩包（只影响传输，不影响数值） */
+  let layerCompressed = false;
   /**
    * 当前数据的 RSTM 基数据体（9 仰角层）：非 null 表示本屏数据支持仰角切换。
    * 普通拼图 / m4 / 合成 RSTM 为 null（无仰角维度）。
@@ -165,6 +176,8 @@ export function useRadarScreen(screenId: number) {
     layerProductId = '';
     layerThreshold = Number.NEGATIVE_INFINITY;
     layerRange = null;
+    layerFormat = null;
+    layerCompressed = false;
     currentVolume = null;
     layerElevation = -1;
     // 画面已清空：示意数据警示必须一起撤下，否则空屏仍挂着红色标记
@@ -383,6 +396,9 @@ export function useRadarScreen(screenId: number) {
       setScreenStatus(screenId, '');
       // 合成兜底（文件未能真实解码）→ 独立红色警示，与状态文本并存
       setScreenSynthetic(screenId, grid.isSynthetic === true);
+      // 记录真实格式与压缩标记：坐标查询据此说明“这个值是怎么取来的”
+      layerFormat = grid.format ?? (volume ? 'rstm' : file.format);
+      layerCompressed = Boolean(file.compressed) || /\.bz2$/i.test(file.binFile);
     } catch (e) {
       // 过期请求的失败同样不能影响当前屏的状态
       if (token !== refreshToken) return;
@@ -439,10 +455,23 @@ export function useRadarScreen(screenId: number) {
       threshold: firstVisibleThreshold(product)
     });
 
+    // 数据来源与取值口径：不同格式（m4 / 拼图 / RSTM）同点数值本就不同，必须随结果给出。
+    // 本屏还没有任何数据时不给出处（避免显示“来源未知”这种无信息量的一行）
+    const source =
+      layerGrid || currentVolume
+        ? querySourceOf({
+            format: layerFormat,
+            isVolume: currentVolume !== null,
+            isSynthetic: layerGrid?.isSynthetic === true,
+            elevation: currentVolume ? layerElevation : -1,
+            compressed: layerCompressed
+          })
+        : undefined;
+
     // —— 地图弹窗：展示可见值（优先）或原始值 ——
     if (result.shown === null) {
       map.closePopup();
-      return result;
+      return { ...result, source };
     }
 
     const lines = [`${result.shown.toFixed(1)} ${product.unit}`];
@@ -452,6 +481,10 @@ export function useRadarScreen(screenId: number) {
       );
     }
     if (result.note) lines.push(`<span style="color:#ffb454">${result.note}</span>`);
+    // 来源行：面板里有完整解释，弹窗只给一行短标签
+    if (source) {
+      lines.push(`<span style="color:#8fa3ba">${QUERY_LABEL.source}：${source.label}</span>`);
+    }
     // 经纬度统一走 utils/coords：负值显示为 S / W，不出现 “-100.000°E”
     lines.push(formatLatLon(lat, lon));
 
@@ -460,7 +493,7 @@ export function useRadarScreen(screenId: number) {
       .setContent(lines.join('<br>'))
       .openOn(map as unknown as L.Map);
 
-    return result;
+    return { ...result, source };
   }
 
   /** 地图点击取值（静默：无数据时只关弹窗，不打扰用户） */
@@ -516,6 +549,9 @@ export function useRadarScreen(screenId: number) {
     // 合成兜底的上传文件同样要挂警示：此前只有服务器取数路径提示“示意数据”，
     // 上传路径完全静默，而 AGENTS.md 明确该标记禁止用于业务判断
     setScreenSynthetic(screenId, grid.isSynthetic === true);
+    // 与服务器取数同样记录格式：上传的 m4 / 拼图 / 基数据取值口径不同
+    layerFormat = data.format;
+    layerCompressed = /\.bz2$/i.test(label);
     // 状态栏同时显示文件名，便于多屏 / 多文件时区分数据来源
     setScreenStatus(screenId, uploadDataLabel(label));
   }

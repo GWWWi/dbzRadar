@@ -17,10 +17,38 @@
   - `src/utils/range.ts`：色标数值范围判断与档位↔数值换算（渲染 / 取值 / 图例共用）
   - `src/constants.ts`：跨层共享常量（统一缺测哨兵 `UNDEF`）
 - 环境配置：`npm run dev`（scripts/dev.cjs，端口 5179）、`npm run build`；类型检查 `npx vue-tsc --noEmit`；单元测试 `npm test`（Vitest）
+- 文档：`docs/RENDER_FLOW.md`（★ 产品渲染链路：点击产品 → 解码 → 渲染 → 值→颜色 + 排障表）/ `docs/PRODUCT_GUIDE.md`（新增产品/改色标）/ `docs/USER_GUIDE.md`（操作手册）/ `docs/DEPLOY_GUIDE.md`（部署）
 - 数据契约：`src/types/index.ts` 中 RadarGrid —— x 经度/y 纬度，data 行优先一维数组，yDelta<0 表示第 0 行在最北；undef 为缺测哨兵值
 - 构建：`vite.config.ts` 的 `build.manualChunks` 将 vue / element-plus / quickearth 拆为独立 vendor chunk（总字节不变，改善缓存与并行加载）。
 
 # 迭代变更日志（按时间倒序）
+
+【2026-11-06 本轮改动（新增渲染链路说明文档：点击产品 → 解码 → 渲染 → 值→颜色）】
+
+1. 修改文件：`docs/RENDER_FLOW.md`（新增）、`CLAUDE.md`（项目基础信息补文档索引 + 本条日志）
+
+2. 修改目的：把“点产品之后数据怎么解码、解码完怎么渲染、渲染怎么按值定颜色”的完整链路写成
+   一份可检索文档，替代散落在源码 JSDoc 与本文件日志里的碎片说明；后续排查颜色/刷新类问题先看它。
+
+3. 关键规则沉淀：
+   - 文档结构固定：① 点击产品后的状态变化与 refresh 四分支 → ② 取数（LRU + 共享任务 + 下载/解压）
+     → ③ 三种格式解码（SWAN 拼图 / MICAPS m4 / RSTM 两步：二进制→极坐标体数据、极坐标→0.01° 网格）
+     → ④ `renderRadar` 五步 → ⑤ 值→颜色分档语义 → ⑥ 取值同源口径 + 排障速查表。
+   - ★ 值→颜色不在 JS 里计算 ★ 平台只交给 QE 两样东西：`colorStops` 规则表 +
+     `BitmapColorScaleGL` 色例纹理（`gradient=false` 分级平色），逐像素落档由 GL 查纹理完成；
+     区间 `[stops[i].value, stops[i+1].value)`，缺测透明，**低于首档会被钳到首档颜色**
+     —— 这就是“透明兜底档 + `buildDisplayValues` 阈值遮蔽”双保险存在的理由。
+   - 数据源持有的是“按当前阈值/范围过滤后的副本”：过滤口径变化必须 `setDataSource` 重建，
+     只换颜色才走 `setDrawOptions`；两者之后都要 `forceRedraw`（`reinit()`）。
+   - RSTM 体数据下「仰角层 + 字段」共同决定栅格内容，切产品必须 `volumeToGrid` 重栅格化，
+     不能只换色标（非体数据才可以只换色标）。
+   - ★ 改链路必须同步文档 ★ 触及 `renderRadar` 签名、`radarSource` 分派、色标/范围语义时，
+     同步更新 `docs/RENDER_FLOW.md` 对应章节，否则文档与代码漂移。
+
+4. 验证方式：纯文档新增，无代码变更（未执行 `vue-tsc` / `npm test`，不受影响）；
+   文中所有行号、函数名、常量、默认值已逐条回查 `ProductList.vue`、`useRadarScreen.ts`、
+   `radarApi.ts`、`radarSource.ts`、`mosaicParser.ts`、`micapsM4Parser.ts`、`cinradVolume.ts`、
+   `rstmGrid.ts`、`radarRenderer.ts`、`utils/range.ts`、`utils/gridSample.ts`、`parse/valueQuery.ts`。
 
 【2026-11-05 本轮改动（提示信息优化第 3 批：去除冗余提示 + 空态/措辞/坐标统一）】
 

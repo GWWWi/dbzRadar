@@ -175,6 +175,7 @@ export function useRadarScreen(screenId: number) {
     layerTime = '';
     layerProductId = '';
     layerThreshold = Number.NEGATIVE_INFINITY;
+    layerSmooth = false;
     layerRange = null;
     layerFormat = null;
     layerCompressed = false;

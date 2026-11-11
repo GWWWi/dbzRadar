@@ -208,7 +208,12 @@ export function setLayout(layout: LayoutType): void {
     }
   } else if (cur.length > layout) {
     cur.splice(layout); // 截断多余屏（地图实例在组件卸载时销毁）
-    if (appState.activeScreenId >= layout) appState.activeScreenId = layout - 1;
+    // 激活屏被截掉时回退到最后一个保留屏。
+    // ★ 按 id 判断而不是与 layout 比大小 ★ id 只保证唯一，不保证等于下标，
+    //   `activeScreenId >= layout` 是“id === 下标”的巧合写法（见 findScreen 说明）。
+    if (!findScreen(appState.activeScreenId)) {
+      appState.activeScreenId = cur[cur.length - 1].id;
+    }
   }
 }
 

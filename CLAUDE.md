@@ -23,6 +23,44 @@
 
 # 迭代变更日志（按时间倒序）
 
+【2026-11-11 本轮改动（架构评审 P0-3/P0-4：状态机复位补全 + AGENTS.md 与代码同步）】
+
+1. 修改文件：`src/composables/useRadarScreen.ts`、`src/store/appStore.ts`、
+   `src/store/appStore.test.ts`、`AGENTS.md`、`CLAUDE.md`（本条日志）
+
+2. 修改目的：落实架构评审的两项 P0——① `clearLayer()` 漏复位 `layerSmooth`、
+   `setLayout` 收缩时用数组长度钳制 id（违反“id ≠ 下标”契约）；② AGENTS.md 多处与代码脱节
+   （RadarGrid.data 类型写错、cinradParser 职责描述过时、目录地图缺新模块、调用链缺分支）。
+
+3. 关键规则沉淀：
+   - ★ 图层判重字段必须与图层同生命周期 ★ `clearLayer()` 现在复位全部 layer* 变量
+     （time/productId/threshold/smooth/range/format/compressed/volume/elevation）；
+     新增判重字段时必须同步加进 clearLayer，否则残留旧值会让 refresh 判重误判。
+   - ★ setLayout 收缩按 id 判断激活屏存活 ★ `findScreen(activeScreenId)` 不存在才回退到
+     最后一个保留屏的 id；禁止 `activeScreenId >= layout` 这类“id === 下标”巧合写法
+     （id 不连续时会把存活的激活屏改成不存在的幽灵 id）。
+   - 测试：`appStore.test.ts` 新增「setLayout 收缩布局」3 用例：激活屏被截掉回退 /
+     保留范围内不变 / id>layout 但仍保留时不误改（手工构造 id=[0,5] + 临时第三屏再收缩，
+     旧写法在该用例下必挂）。
+   - AGENTS.md 同步要点（均已逐条回查代码）：
+     · cinradParser 是**单层合成兜底**（isSynthetic 恒 true），真实体解码在
+       rstmRadials.parseRstmVolume；tryParseHeader 的实际复用方是 rstmRadials；
+     · RadarGrid.data 为 **Float32Array**（原文档写 number[]）；
+     · 目录地图补齐 localFiles/localFileStore/uploadRouter/FolderFiles/versionCheck/
+       TIMELINE_MSG/setDataSourceMode/setLocalFileTimes 等缺失条目；
+     · 调用链补齐 dataSourceMode 分流、fetchLatestTime（★ 假实现）、本地文件优先、
+       upload 模式、体数据仰角/字段重栅格化、queryValue 取值、上传路由、播放 loading 避让；
+     · 硬性约束 #2 修正“bz2 一律预解压”（与 #18 浏览器端 seek-bzip 解压矛盾）；
+       #14 注明 rstmGrid MAX_GRID_POINTS=200 万是**输出分辨率**防御钳制，不是输入校验上限；
+     · 配方 B：分派链在 radarSource 的 loadGrid 与 parseUploadedFile **两处都要改**；
+       配方 E 补 fetchLatestTime 假实现说明；开头节号笔误“第 7 节验证”→“第 9 节 DoD”。
+
+4. 验证方式：`npx vue-tsc --noEmit -p tsconfig.json` 通过；`npm test` **12 文件 92 用例**全通过
+   （新增 setLayout 收缩 3 用例）；IDE 无报错。本轮未触及渲染/取数路径（store 纯逻辑 +
+   composable 一行复位 + 文档）。
+   ⚠ 需浏览器人工确认：4 屏切 2 屏时激活屏标记落在第 2 屏；“该时次无数据”清屏后
+   再加载，平滑开关与画面一致。
+
 【2026-11-06 本轮改动（坐标查询增加“数据来源 / 取值口径”说明：不同文件后缀结果不同）】
 
 1. 修改文件：`src/types/index.ts`、`src/constants/messages.ts`、`src/constants/messages.test.ts`、

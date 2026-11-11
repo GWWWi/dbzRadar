@@ -1,11 +1,13 @@
 /**
  * store/appStore.test.ts —— 屏状态 mutation 回归测试
  *
- * 重点：loading 是“忙”状态位，独立于展示文案 status；新增屏不继承忙标记。
+ * 重点：loading 是“忙”状态位，独立于展示文案 status；新增屏不继承忙标记；
+ * 布局收缩时激活屏按 id（而非数组下标）回退。
  */
 import { afterEach, describe, expect, it } from 'vitest';
 import {
   appState,
+  setActiveScreen,
   setLayout,
   setScreenLoading,
   setScreenStatus
@@ -88,5 +90,39 @@ describe('ScreenState.statusKind', () => {
   it('不传语气时默认 info', () => {
     setScreenStatus(0, '上传数据 · a.bin');
     expect(appState.screens[0].statusKind).toBe('info');
+  });
+});
+
+describe('setLayout 收缩布局', () => {
+  it('激活屏被截掉时回退到最后一个保留屏', () => {
+    setLayout(4);
+    setActiveScreen(3);
+    setLayout(2);
+
+    expect(appState.screens).toHaveLength(2);
+    expect(appState.activeScreenId).toBe(appState.screens[appState.screens.length - 1].id);
+  });
+
+  it('激活屏仍在保留范围内时保持不变', () => {
+    setLayout(4);
+    setActiveScreen(1);
+    setLayout(2);
+
+    expect(appState.activeScreenId).toBe(1);
+  });
+
+  it('按 id 而不是数组下标判断：id 大于 layout 但仍被保留时不误改激活屏', () => {
+    setLayout(2);
+    // 模拟“删除单屏 / 恢复布局”等未来场景：id 不连续（[0, 5]）。
+    appState.screens[1].id = 5;
+    setActiveScreen(5);
+    // 临时加第三屏再收缩回 2：保留集仍为 [0, 5]，激活屏 id=5 存活。
+    // 旧写法 `activeScreenId >= layout`（5 >= 2）会把它误改成 layout-1=1，
+    // 而 id=1 根本不存在 → 激活屏指向幽灵屏。
+    appState.screens.push({ ...appState.screens[0], id: 6 });
+    setLayout(2);
+
+    expect(appState.screens).toHaveLength(2);
+    expect(appState.activeScreenId).toBe(5);
   });
 });

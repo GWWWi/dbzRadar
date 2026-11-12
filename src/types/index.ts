@@ -335,3 +335,91 @@ export interface RadarGrid {
    */
   format?: RadarFileFormat;
 }
+
+/* ─────────────── 解码 Worker 通信契约（api/decodeWorker ↔ api/decodeClient） ─────────────── */
+
+/**
+ * 解码操作类型：
+ *   decompress  ：bzip2 解压（数百 ms~1s，最重的同步热点）；
+ *   parseGrid   ：已解压 buffer → 单层网格（魔数识别 + 分派解析器）；
+ *   parseVolume ：已解压 buffer → 体数据（非标准体返回 null，连同 buffer 回传供兜底复用）；
+ *   parseAny    ：已解压 buffer → 优先体数据，失败同 Worker 内回退单层网格；
+ *   layerToGrid ：单仰角层极坐标 → 等经纬度网格（70 万点三角换算）。
+ */
+export type DecodeOp = 'decompress' | 'parseGrid' | 'parseVolume' | 'parseAny' | 'layerToGrid';
+
+/** parseGrid / parseAny 的输入：已解压二进制 + 清单元数据 + 产品（合成兜底用） */
+export interface DecodeParsePayload {
+  buffer: ArrayBuffer;
+  meta: RadarFileMeta;
+  /**
+   * 产品元信息（主线程查好后传入）。
+   * ★ Worker 内没有服务器产品目录 ★ 不能依赖 productApi.findProduct，
+   * 否则合成兜底/单位标注会静默退到静态目录。
+   */
+  product?: RadarProduct;
+  /** true=上传路径：魔数不认识时抛错（不回退文件名推断） */
+  strict?: boolean;
+}
+
+/**
+ * 解析结果（取数与上传共用）：
+ *   volume：RSTM 标准基数据体（保留仰角维度，栅格化由调用方按层/字段执行）；
+ *   grid  ：拼图 / m4 / 合成 RSTM 单层网格。
+ */
+export type RadarParsedData =
+  | { kind: 'volume'; volume: RstmVolume; format: RadarFileFormat }
+  | { kind: 'grid'; grid: RadarGrid; format: RadarFileFormat };
+
+/**
+ * parseVolume 的结果：体数据（非标准体为 null）+ 已解压 buffer。
+ * buffer 回传是为了“体解析失败 → loadGrid 合成兜底”能复用同一份二进制，
+ * 避免二次下载/解压（与改造前 rememberFallbackBuffer 的语义一致）。
+ */
+export interface DecodeVolumeResult {
+  volume: RstmVolume | null;
+  buffer: ArrayBuffer;
+}
+
+/**
+ * 栅格化载荷：单仰角层 + 栅格化所需的最小体元数据。
+ * ★ 只传一层而不是整个 volume ★ 体数据可达上百 MB，整份结构化克隆
+ * 会吃掉 Worker 化的收益；单层（数百径向×9 字段）克隆成本可接受。
+ * 数组按层切片为单元素，与 RstmVolume 的“按层索引”语义兼容。
+ */
+export interface GridLayerPayload {
+  stationId: string;
+  stationName: string;
+  lat: number;
+  lon: number;
+  time: string;
+  /** 该层库长（米） */
+  gateSize: number;
+  /** 单元素数组：[该层库数] */
+  gateCounts: number[];
+  gateSizes: number[];
+  startRanges: number[];
+  maxRanges: number[];
+  nyquists: number[];
+  /** 全部仰角（layerToGrid 用 elevations[0] 兜底） */
+  elevations: number[];
+  /** 单元素数组：[该层全部径向] */
+  layers: RstmRadial[][];
+  /** 栅格化目标字段（取哪个矩的数值场）；缺省按 dBZ */
+  field?: RstmFieldName;
+}
+
+/** 请求：id 用于对应响应；signal 取消只影响主线程等待，Worker 算完的结果被丢弃 */
+export interface DecodeRequest {
+  id: number;
+  op: DecodeOp;
+  payload: ArrayBuffer | DecodeParsePayload | GridLayerPayload;
+}
+
+/** 响应：ok=false 时 error 为错误消息（主线程还原为 Error） */
+export interface DecodeResponse {
+  id: number;
+  ok: boolean;
+  result?: ArrayBuffer | RadarGrid | RadarParsedData | DecodeVolumeResult | null;
+  error?: string;
+}

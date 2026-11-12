@@ -3,12 +3,14 @@
  *
  * 集中管理所有跨屏共享的状态：
  *   - layout          ：多屏布局（1 / 2 / 4 / 6 屏）
- *   - products        ：产品目录（来自 productApi）
  *   - files           ：雷达文件清单（来自 radarApi）
  *   - screens         ：各屏配置 —— ★ 不同屏可分配不同产品/时间，实现对比 ★
  *   - activeScreenId  ：当前激活屏（产品列表与时间轴的作用对象）
  *   - playing         ：动画播放状态
  *   - syncPlay        ：多屏同步开关（true 时时间轴控制所有屏）
+ *
+ * ★ 产品目录不在这里另存副本 ★ 唯一事实源是 productApi.catalogProducts
+ * （响应式 computed），本文件以 products 导出供 UI 使用；setProducts 委托写入。
  *
  * 并导出一组 mutation 函数供组件调用。
  */
@@ -22,11 +24,8 @@ import type {
   RadarProduct,
   ValueRange
 } from '../types';
-// 静态产品目录：产品目录尚未加载时提供可用色标的兜底（config 层不反向依赖 store）
-import {
-  getProductById as getStaticProductById,
-  getProductList as getStaticProductList
-} from '../config/products';
+// 产品目录唯一事实源（api 层）：store 在其上，向下引用不违反分层规则
+import { catalogProducts, findProduct, setLoadedProducts } from '../api/productApi';
 import type { ScreenStatusKind } from '../constants/messages';
 
 /** 布局类型：1 / 2 / 4 / 6 屏 */
@@ -79,7 +78,6 @@ export interface ScreenState {
 /** 全局应用状态形状 */
 export interface AppState {
   layout: LayoutType;
-  products: RadarProduct[];
   files: RadarFileMeta[];
   /** 配置生成的时间轴（配置模式）；空数组表示未启用，回退用 files 推导 */
   timeline: string[];
@@ -135,7 +133,6 @@ function createScreens(n: number): ScreenState[] {
 /** 全局响应式状态实例（单例） */
 export const appState = reactive<AppState>({
   layout: 1,
-  products: [],
   files: [],
   timeline: [],
   fileUrlTemplate: '',
@@ -222,11 +219,9 @@ export function setActiveScreen(id: number): void {
   if (findScreen(id)) appState.activeScreenId = id;
 }
 
-/** 产品是否真实存在于服务端目录或静态目录中 */
+/** 产品是否真实存在于服务端目录或静态目录中（统一走 productApi 查找链） */
 function productExists(id: string): boolean {
-  return (
-    appState.products.some((p) => p.id === id) || Boolean(getStaticProductById(id))
-  );
+  return Boolean(findProduct(id));
 }
 
 /**
@@ -341,9 +336,12 @@ export function setFiles(files: RadarFileMeta[]): void {
   }
 }
 
-/** 写入产品目录 */
+/**
+ * 写入产品目录（委托 productApi，全平台只有一份目录状态）。
+ * App 启动拉取成功后调用；UI 经 products（catalogProducts）自动跟随。
+ */
 export function setProducts(products: RadarProduct[]): void {
-  appState.products = products;
+  setLoadedProducts(products);
 }
 
 /** 设置播放状态 */
@@ -425,31 +423,23 @@ export function setScreenLoading(id: number, loading: boolean): void {
 /**
  * 按产品代码取产品元信息（UI / 渲染侧唯一入口，永不返回 undefined）。
  *
- * 查找顺序：
- *   1) 已加载的产品目录（appState.products，即 fetchProductList 的返回值）；
- *   2) 启动早期目录尚未写入时，回退内置静态目录（src/config/products.ts）。
+ * 查找链统一走 productApi.findProduct（服务器目录 → 静态目录），
+ * 与取数链路（radarSource）同一口径，不会出现两套兜底结果不一致。
  *
  * ★ 必须回退到真实产品，不能返回 colorStops 为空的占位对象 ★
  *   渲染层用 `colorStops.length - 1` 作为色例终止档号，空数组会得到 -1，
  *   QE 的 BitmapColorScaleGL 收到非法档号可能直接抛错。
- *
- * 与 productApi.findProduct 的分工（store 不 import api 层，避免反向依赖）：
- *   - productApi.findProduct：数据访问层入口，服务器目录缓存优先，允许 undefined；
- *   - 本函数：UI 入口，保证返回可用色标；两者的最终兜底都是静态目录。
  */
 export function getProductByIdSafe(id: string): RadarProduct {
-  const loaded = appState.products.find((p) => p.id === id);
-  if (loaded) return loaded;
-
-  const staticHit = getStaticProductById(id);
-  if (staticHit) return staticHit;
+  const hit = findProduct(id);
+  if (hit) return hit;
 
   // 未命中：显式告警后再兜底到目录第一项。
   // 原实现静默 `?? appState.products[0]`，调用方无法区分「命中」与「回退」，
   // 于是屏头、图例、色标用的是兜底产品，而 sc.productId 仍是旧 id，
   // 三者口径不一致且难以排查。
   console.warn(`[appStore] 未知产品 ${id}，回退到默认产品`);
-  const fallback = appState.products[0] ?? getStaticProductList()[0];
+  const fallback = catalogProducts.value[0];
   if (fallback) return fallback;
 
   // 理论上不可达（静态目录固定非空），仅为类型收窄保留
@@ -457,6 +447,12 @@ export function getProductByIdSafe(id: string): RadarProduct {
 }
 
 /* ─────────────────────────── computed ─────────────────────────── */
+
+/**
+ * 当前产品目录（响应式）：直接复用 productApi 的唯一事实源，
+ * 不在 store 里另存副本（避免两套目录状态漂移）。
+ */
+export const products = catalogProducts;
 
 /**
  * 空屏兜底：setLayout 保证至少 1 屏，这里仅用于满足类型收窄，

@@ -21,7 +21,7 @@
 | build | `npm run build`（scripts/build.cjs），mode=production → 读 `.env.production`；`vite.config.ts` 的 manualChunks 将 vue / element-plus / quickearth 拆为独立 vendor chunk |
 | 环境变量 | `.env.development` / `.env.production`（仓库提交）+ `.env.example`（模板）；变量 `VITE_DATA_BASE_URL` / `VITE_TILE_SERVICE_BASE` / `VITE_TIANDITU_KEY`，类型见 `src/types/env.d.ts`；**构建时内联**，改完必须重新 dev/build，不能只改服务器上的文件 |
 | 类型检查 | `npx vue-tsc --noEmit -p tsconfig.json` |
-| 单元测试 | `npm test`（Vitest 1.6；覆盖 datetime/coords/range/messages/configApi/appStore、radarCache/radarApi 取数并发、rstmRadials/rstmPolar/rstmGrid/valueQuery） |
+| 单元测试 | `npm test`（Vitest 1.6；覆盖 datetime/coords/range/messages/configApi/appStore、radarCache/radarApi 取数并发、radarFormat 分派/productApi 目录、rstmRadials/rstmPolar/rstmGrid/valueQuery） |
 | 部署 | `docs/DEPLOY_GUIDE.md`（现场实测值/目录与端口清单/nginx 说明/发布与验收步骤/待决项） |
 | 用户手册 | `docs/USER_GUIDE.md`（面向值班/业务使用者：界面、状态文案含义、读图口径、FAQ） |
 
@@ -44,7 +44,7 @@ public/data/
   config.example.json          应用配置示例（部署时复制为 config.json 放服务器任意目录；dataSourceMode: both/latest/upload）
 src/
   main.ts                      QE init + 挂载 Vue（含 Element Plus 样式与深色主题 css-vars，html.dark 已在 index.html 声明）
-  App.vue                      布局编排 + 启动拉取 products/config（dataSourceMode 分流：清单/最新时间）+ 播放定时器(800ms，loading 避让)
+  App.vue                      布局编排 + 启动拉取 products/config（dataSourceMode 分流：清单/最新时间）；播放编排在 usePlayback
   styles.css                   全局深色主题样式
   constants.ts                 ★ 跨层常量：统一缺测哨兵 UNDEF
   mapBorder/                   ★ 国界底图数据：worldGJ(179 国) / chinaGJ(全国) / chinaSJ(42 省)，合计约 4MB
@@ -59,12 +59,15 @@ src/
   types/env.d.ts               ImportMetaEnv 补充声明（VITE_ 变量全部可选，缺省走读取处兜底）
   config/products.ts           内置产品静态目录 PRODUCTS（服务器产品目录的回退）+ 8 个产品的专用色标函数；产品 id 与 RSTM 字段名一致（dBZ/dBT/V/W/ZDR/CC/KDP/SNRH）
   config/dataSource.ts         ★ 雷达数据基地址 DATA_BASE_URL = VITE_DATA_BASE_URL（缺省 /radar-data/，dev 由 Vite 代理到 9099），含尾斜杠兜底
-  api/productApi.ts            fetchProductList()（服务器 products.json → 失败回退静态）/findProduct(id)/setProductUrl(url)
+  api/productApi.ts            ★ 产品目录唯一事实源：fetchProductList()/catalogProducts（响应式 computed，服务器目录→静态兜底）/findProduct/setProductUrl/setLoadedProducts；store.products 直接派生自它，不另存副本
   api/configApi.ts             fetchAppConfig()（config.json 含 dataSourceMode: both/latest/upload，缺失回退清单模式）/setConfigUrl(url)/buildTimelineTimes(cfg, anchorMs?) 时间轴生成/fetchLatestTime（★ 假实现：返回当前时间，接真实后端时替换）/snapNearestTime
   api/radarApi.ts              对外门面：fetchRadarGrid/fetchRstmVolume 的缓存编排 + 兼容导出（原有 import 路径不变）
   api/radarCache.ts            ★ LruCache（条数/字节双上限）+ SharedTask（引用计数取消，waiters 归零才 abort）
   api/radarManifest.ts         清单发现（配置 → manifest → 目录扫描 → 本地回退）/buildFileMetaFromTemplate/resolveDataUrl
-  api/radarSource.ts           下载 + bz2 解压 + 魔数识别 + loadGrid/loadVolume/parseUploadedFile + 失败 buffer 复用
+  api/radarSource.ts           下载 + bz2 解压（Worker）+ loadGrid/loadVolume/parseUploadedFile（解析委托 radarFormat + decodeClient）+ 失败 buffer 复用
+  api/radarFormat.ts           ★ 格式识别与解析分派唯一入口（取数/上传共用）：detectRadarFormat（魔数优先）/parseRadarBuffer（RSTM 优先体→合成兜底）/reconcileMosaicTime；新增格式只改这里
+  api/decodeWorker.ts          ★ 解码 Worker（无状态纯计算）：decompress/parseGrid/parseVolume/parseAny/layerToGrid 五类操作；响应 buffer 用 transfer 零拷贝回传
+  api/decodeClient.ts          ★ Worker 主线程客户端：懒创建单例 + id↔Promise + signal 只取消等待；Worker 不可用/故障自动回退主线程同一套纯函数（runDecode/terminateDecodeWorker）
   api/localFiles.ts            本地文件夹文件源：分组追加/删除、时次索引（getLocalFile 供 refresh 优先命中）；结构记忆 localStorage + 目录句柄 IndexedDB（跨会话自动恢复）
   api/localFileStore.ts        IndexedDB 目录句柄读写封装（File System Access API 的句柄持久化）
   parse/mosaicParser.ts        SWAN 拼图 "diamond" 头：isRADAMOSAIC()/parseRADAMOSAIC()
@@ -72,7 +75,7 @@ src/
   parse/cinradVolume.ts        RSTM 对外门面：re-export parseRstmVolume/sampleRstmValue/latLonToPolar/volumeToGrid 等（原有 import 路径不变）
   parse/rstmRadials.ts         二进制头/cut/径向/矩解析（一个 DataView、8 位矩用 Uint8Array、字段反向表、空字段共享）
   parse/rstmPolar.ts           经纬度↔极坐标、地面↔斜距、最近邻/九点取样、findNearestRadialIndex
-  parse/rstmGrid.ts            极坐标→0.01° 网格；地面→斜距 LUT（groundToSlantFast）；单条 WeakMap 缓存（多屏同层同字段复用）
+  parse/rstmGrid.ts            极坐标→0.01° 网格：layerToGrid 纯计算（可进 Worker）+ volumeToGrid 同步门面 + per-volume 小 LRU（6 条，键=层|字段）+ peekVolumeGrid/buildGridLayerPayload（单层载荷）；地面→斜距 LUT（groundToSlantFast）
   parse/valueQuery.ts          ★ 单点取值纯函数：fieldForProduct（产品→字段）/rawValueAt（原始值）/queryValue（原始值 + 九点均值 + 可见性与原因），UI 只负责弹窗
   parse/rstmRadials.test.ts    ★ 二进制解析回归测试：手工构造最小 RSTM 缓冲，覆盖校验/解码/16 位/dealias/长短圈合并/时间
   parse/micapsM4Parser.ts      MICAPS 第4类文本：isMicapsM4()/parseMicapsM4()
@@ -80,10 +83,11 @@ src/
   render/mapFactory.ts         createRadarMap（QE LMap + 版权条清理）
   render/baseMap.ts            天地图/国界底图（admin/border，地址由 TILE_SERVICE_BASE 决定；border 配色陆地 #efefdb、海洋 #97b6e1、界线 #606266）、边界数据缓存、切换 token、cleanupBaseMap
   render/mapLink.ts            多屏联动（move 经 rAF 合并）；只管理连接表，不碰底图
-  render/radarRenderer.ts      ★ 核心：renderRadar(smooth,range)/updateRadarProduct/updateRadarSmooth/updateRadarRange/removeRadar/sampleGridValue/firstVisibleThreshold
-  store/appStore.ts            Vue reactive 单例全局状态 + mutations（setLayout/setScreenProduct/setScreenSmooth/setScreenRange/setScreenElevations/setScreenElevation/setScreenTime/setFiles/setProducts/setPlaying/setSyncPlay/setSyncMap/setBaseMap/setActiveScreen/setScreenStatus(text,kind)/setScreenSynthetic/setScreenLoading/setDataSourceMode/setLocalFileTimes/setTimeline(times,template)/setTimelineConfig/getProductByIdSafe）+ 状态 timeline/fileUrlTemplate/timelineConfig/dataSourceMode/localFileTimes + computed（activeScreen/timelineTimes）；ScreenState.smooth / valueRange / elevations+elevationIndex / synthetic 每屏独立，statusKind 为状态语气（配色/播报），loading 为播放避让的忙标记
+  render/radarRenderer.ts      ★ 核心：renderRadar(smooth,range)/updateRadarProduct/updateRadarSmooth/updateRadarRange/removeRadar/sampleGridValue/firstVisibleThreshold；数据源按 grid+阈值+范围共享（每 grid 小 LRU 3 条，多屏同口径复用同一 provider）
+  store/appStore.ts            Vue reactive 单例全局状态 + mutations（setLayout/setScreenProduct/setScreenSmooth/setScreenRange/setScreenElevations/setScreenElevation/setScreenTime/setFiles/setProducts(委托 productApi)/setPlaying/setSyncPlay/setSyncMap/setBaseMap/setActiveScreen/setScreenStatus(text,kind)/setScreenSynthetic/setScreenLoading/setDataSourceMode/setLocalFileTimes/setTimeline(times,template)/setTimelineConfig/getProductByIdSafe）+ 状态 timeline/fileUrlTemplate/timelineConfig/dataSourceMode/localFileTimes + computed（activeScreen/timelineTimes/products=productApi.catalogProducts）；ScreenState.smooth / valueRange / elevations+elevationIndex / synthetic 每屏独立，statusKind 为状态语气（配色/播报），loading 为播放避让的忙标记
   constants/messages.ts        ★ 用户可见提示文案唯一来源：STATUS（屏头状态）/ UPLOAD_MSG / VERSION_MSG / TIMELINE_MSG / APP_MSG / FOLDER_MSG / QUERY_LABEL + noDataText/uploadDataLabel/querySourceOf（坐标查询的“来源与口径”说明）；与 docs/USER_GUIDE.md §6 状态表逐条对应
-  composables/useRadarScreen.ts ★ 单屏地图/取数/图层状态机：建图销毁、watch 刷新、局部更新、取值（调用 parse/valueQuery）、上传
+  composables/useRadarScreen.ts ★ 单屏地图/取数/图层状态机：建图销毁、watch 刷新、局部更新、取值（调用 parse/valueQuery）、上传；图层判重字段集中在 LayerState（commitLayer 统一写入/resetLayer 统一清空）；栅格化走 fetchVolumeGrid（Worker）
+  composables/usePlayback.ts   播放编排：800ms 定时器（loading 避让）+ 下一时次预取（下载+解析+栅格化进缓存，停止播放时 abort）
   composables/uploadRouter.ts  跨组件上传路由：屏 id → onUpload 处理器表（各屏挂载时注册/卸载时注销，侧栏把文件交给激活屏）
   components/
     Toolbar.vue                布局切换(1/2/4/6屏)/同步开关/地图联动开关/播放按钮
@@ -119,6 +123,15 @@ renderRadar **不修改 grid.data**：渲染数据源内部使用“按当前阈
 `sampleGridValue(grid, lat, lng, firstVisibleThreshold(product), screen.valueRange)`，
 否则图上透明的区域（无回波 / 范围外）会弹出数值。
 
+### 解码 Worker 契约（types/index.ts）
+- `DecodeOp`：decompress / parseGrid / parseVolume / parseAny / layerToGrid 五操作；
+  请求/响应经 `DecodeRequest/DecodeResponse`（id 对应），结果 buffer 用 transfer 零拷贝回传。
+- `GridLayerPayload`：栅格化只传**单仰角层** + 最小体元数据（数组按层切片为单元素，
+  Worker 侧 layerIdx=0），不传整个 volume（上百 MB 的克隆会吃掉 Worker 化收益）。
+- `RadarParsedData`：取数与上传共用的解析结果（volume | grid）。
+- ★ Worker 无状态 ★ 缓存在主线程（radarApi LRU / rstmGrid per-volume LRU），
+  Worker 只做纯计算；产品元信息由主线程查好传入（Worker 内没有服务器产品目录）。
+
 ## 5. 关键调用链
 
 ```
@@ -136,16 +149,17 @@ renderRadar **不修改 grid.data**：渲染数据源内部使用“按当前阈
         + map.on('click') + registerUploadHandler + ResizeObserver(invalidateSize + reinit)
         watch(productId|time|smooth|range|elevation) → refresh()（refreshToken 判重 + inflight abort）:
           时间未变 → 局部更新（必须先于文件匹配，上传数据不在清单里）：
-            体数据且仰角/字段变 → volumeToGrid 重栅格化 + 重建图层（不重新下载）
+            体数据且仰角/字段变 → fetchVolumeGrid（Worker 栅格化，LRU 命中直返）+ 重建图层（不重新下载）
             仅产品变 → updateRadarProduct；仅范围变 → updateRadarRange；仅平滑变 → updateRadarSmooth
           本地文件夹文件命中 getLocalFile(time) → parseUploadedFile 直接解析（不请求服务器）
           upload 模式 → 清屏 + “仅上传模式”提示
           文件解析: 模板模式 buildFileMetaFromTemplate(tpl, time)；
                     清单模式 files.find(time)，找不到 → 状态提示“该时次无数据（最近可用 …）”
           否则 → rstm 格式先 fetchRstmVolume（体数据，失败回退），其余 fetchRadarGrid
-                （404 → RadarFileMissingError → “该时次无数据”）
+                （下载 → Worker 解压 → Worker 解析；404 → RadarFileMissingError → “该时次无数据”）
                 → removeRadar(旧) → renderRadar(map, grid, product, smooth, range)
                 → fitToGrid(grid)：数据范围变化时自动定位（同区域切时次不重置视野）
+        图层写入统一走 commitLayer（判重字段一次性同步），清空统一走 resetLayer
 
 点击:   map click / 坐标查询面板 → queryValue({grid, volume, 仰角, threshold, range})（parse/valueQuery）
         → 原始值 + 9 点均值 + 可见性原因 + querySourceOf 来源标签
@@ -158,8 +172,10 @@ renderRadar **不修改 grid.data**：渲染数据源内部使用“按当前阈
 选锚点: Timeline 时间选择控件（配置模式）→ buildTimelineTimes(cfg, anchor) 重生成
         → setTimeline + setScreenTime 跳到锚点时次（syncPlay 广播全屏）
 
-播放:   App.vue setInterval 800ms → 任一相关屏 loading 则不推进（播放避让）
+播放:   usePlayback setInterval 800ms → 任一相关屏 loading 则不推进（播放避让）
         → setScreenTime(激活屏, 下一时次)（syncPlay 广播全屏，到尾循环）
+        → 预取下一时次（fetchRstmVolume/fetchRadarGrid + fetchVolumeGrid 进缓存，
+          与 refresh 同键自动合并；停止播放时 abort，失败静默）
 ```
 
 ## 6. 硬性约束与踩坑（违反必出 bug）
@@ -178,8 +194,8 @@ renderRadar **不修改 grid.data**：渲染数据源内部使用“按当前阈
 9. yDelta 可正可负，任何行号换算禁止假设"第 0 行在南"。
 10. **时间轴与文件解耦**：配置模式时间轴按规则生成，时次未必有文件——
     清单模式找不到或模板模式 404 都必须提示"该时次无数据"，不得静默失败。
-11. **fetchRadarGrid 返回的是共享缓存对象**：多屏/播放复用同一引用，任何调用方不得修改
-    `grid.data` / `undef` / `time`（渲染层在副本上过滤弱值，取值只读）。
+11. **fetchRadarGrid / fetchVolumeGrid 返回的是共享缓存对象**：多屏/播放复用同一引用，
+    任何调用方不得修改 `grid.data` / `undef` / `time`（渲染层在副本上过滤弱值，取值只读）。
 12. **时间轴时次上限 3000**：超限时 buildTimelineTimes 自动按整分钟放大间隔并 warn；
     默认 6 分钟 × 10 天 = 2401 档，该保护不得改变默认配置的行为。
 13. **网络请求统一走 `utils/http.ts` 的 fetchWithTimeout**：原生 fetch 没有超时，
@@ -220,11 +236,26 @@ renderRadar **不修改 grid.data**：渲染数据源内部使用“按当前阈
     当二进制解→合成兜底→屏头显示“示意数据”假回波，错得静默、极难发现。
     另：`/data` 前缀被 nginx 接管后，`dist/data/`（示例 config/products/manifest）在站点上
     就访问不到了，这些文件要么放数据目录，要么用绝对路径重新映射。
-21. **volumeToGrid 结果只读且按 volume 单条缓存**：多屏共享同一 `RadarGrid`，
-    禁止修改 `grid.data`/`time`；缓存键为“层索引|字段”，切换层/字段会重算。
+21. **volumeToGrid 结果只读且按 volume 小 LRU 缓存（6 条，键=层索引|字段）**：多屏共享同一
+    `RadarGrid`，禁止修改 `grid.data`/`time`；多屏不同仰角/字段不再互相挤掉（旧单条缓存会抖动）。
+    异步业务入口是 `radarApi.fetchVolumeGrid`（LRU 命中直返，miss 交 Worker 栅格化）；
+    `volumeToGrid` 同步门面仅供兜底/测试；`layerToGrid` 是无缓存纯函数（Worker 用）。
 22. **RSTM 栅格化的地面→斜距换算走 LUT**：`rstmGrid.groundToSlantFast` 按仰角（0.01° 取整）
     缓存 100m 步长查找表；与 `groundToSlantRange` 误差 <1m（rstmGrid.test 保证）。
     修改步长/最大距离必须同步更新测试，否则会产生“图上颜色与点击取值错库”。
+23. **CPU 密集操作必须走解码 Worker**：bz2 解压 / 二进制解析 / 栅格化经 `decodeClient.runDecode`
+    在 Worker 执行，主线程只 await + token 判重；禁止在业务代码重新引入同步解压/解析。
+    Worker 不可用/故障时 decodeClient 自动回退主线程同一套纯函数（功能不缺失）；
+    请求 payload 不 transfer（保留兜底重试能力），响应结果 buffer 用 transfer 零拷贝。
+    测试环境（Node）自动走兜底路径，无需 mock Worker。
+24. **产品目录单一事实源**：`productApi.catalogProducts`（响应式）是全平台唯一目录状态；
+    store.products 直接派生、setProducts 委托写入，禁止在 store/组件另存目录副本
+    （两套兜底链会漂移：setProductUrl 清缓存后旧副本仍在）。
+25. **格式识别与分派只在 radarFormat**：取数（loadGrid）与上传（parseUploadedFile）共用
+    detectRadarFormat/parseRadarBuffer；新增格式只改这一处，禁止再写第二套魔数判定顺序。
+26. **图层判重字段集中在 LayerState**：useRadarScreen 的图层快照（grid/time/productId/
+    threshold/smooth/range/format/compressed/volume/elevation）写入统一走 commitLayer、
+    清空统一走 resetLayer；新增判重字段只改这两个函数，禁止再散落闭包变量手工同步。
 
 ## 7. 分层规则与编码规范
 
@@ -246,8 +277,9 @@ renderRadar **不修改 grid.data**：渲染数据源内部使用“按当前阈
 
 ### B. 新增需要专门解析的产品
 1. src/parse/ 新增解析器 → 输出 RadarGrid（undef=999999，永不抛错可用 buildSynthetic 兜底）
-2. radarSource 的 loadGrid 与 parseUploadedFile **两条分派链都要加**（取数与上传共用格式识别顺序，只改一处会出现“上传能识别、服务器取数不行”）
-3. 新文件类型：扩展 RadarFileFormat 类型 + manifest.json + detectFormat()/guessFormat()（radarSource）+ buildMetaFromFileName()（radarManifest）
+2. **radarFormat.parseRadarBuffer 加分派**（取数与上传共用这一处，不再有两套判定顺序）；
+   Worker 与主线程兜底自动共用新分派，无需另改
+3. 新文件类型：扩展 RadarFileFormat 类型 + manifest.json + detectRadarFormat()/guessFormat()（radarFormat）+ buildMetaFromFileName()（radarManifest）
 
 ### C. 修改色标
 只改 products.ts 对应产品的 colorStops（升序、RGBA 0~255、首档透明兜底）。

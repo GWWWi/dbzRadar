@@ -1,15 +1,19 @@
 /**
- * api/productApi.ts —— 获取产品列表的接口（产品列表数据源）
+ * api/productApi.ts —— 产品目录的唯一事实源（加载 + 响应式目录 + 查找）
  *
  * ────────────────────────────────────────────────────────────────────────
+ * ★ 单一事实源 ★
+ *   目录原先在 productApi.loadedProducts 与 appState.products 各存一份，
+ *   两套兜底链可能漂移（setProductUrl 清缓存后 store 仍是旧目录）。
+ *   现在本模块持有唯一的响应式目录：
+ *     - catalogProducts：computed，服务器目录优先，未加载时回退静态目录；
+ *       store 直接把它作为 UI 的产品列表（不再另存一份）；
+ *     - findProduct：同步查找（服务器目录 → 静态目录），允许 undefined。
+ *
  * 接口约定：
  *   fetchProductList(): Promise<RadarProduct[]>
  *     优先从服务器获取产品目录 JSON（地址可用 setProductUrl 指向服务器
- *     任意目录，相对路径或跨域绝对 URL 均可）；获取失败或格式非法时
- *     回退到前端内置静态目录（src/config/products.ts），保证应用可用。
- *
- *   findProduct(id): RadarProduct | undefined
- *     先在最近一次成功加载的服务器目录中查找，再回退静态目录。
+ *     任意目录）；获取失败或格式非法时回退前端内置静态目录。
  *
  * 服务器产品文件格式（JSON 数组，字段与 RadarProduct 对应）：
  *   [
@@ -21,6 +25,7 @@
  * ────────────────────────────────────────────────────────────────────────
  */
 
+import { computed, ref } from 'vue';
 import type { ColorStop, RadarProduct } from '../types';
 import {
   getProductList as getStaticProducts,
@@ -31,8 +36,25 @@ import { fetchWithTimeout } from '../utils/http';
 /** 服务器产品目录地址（默认站点 /data/products.json，可用 setProductUrl 改指向） */
 let productUrl = 'data/products.json';
 
-/** 最近一次成功加载的产品目录缓存（供 findProduct 同步查找） */
-let loadedProducts: RadarProduct[] | null = null;
+/** 最近一次成功加载的服务器目录（响应式：UI 经 catalogProducts 自动跟随） */
+const loadedProducts = ref<RadarProduct[] | null>(null);
+
+/**
+ * 当前生效的产品目录（唯一事实源，响应式）。
+ * 服务器目录优先；未加载/加载失败时回退内置静态目录（永不为空）。
+ * store 直接把本 computed 作为 UI 产品列表，不再另存副本。
+ */
+export const catalogProducts = computed<RadarProduct[]>(
+  () => loadedProducts.value ?? getStaticProducts()
+);
+
+/**
+ * 写入已加载的产品目录（fetchProductList 成功后调用；null = 清空回退静态）。
+ * store.setProducts 委托到这里，保证全平台只有一份目录状态。
+ */
+export function setLoadedProducts(products: RadarProduct[] | null): void {
+  loadedProducts.value = products;
+}
 
 /**
  * 设置服务器产品目录地址（相对站点根的路径或任意服务器的绝对 URL）。
@@ -40,7 +62,7 @@ let loadedProducts: RadarProduct[] | null = null;
  */
 export function setProductUrl(url: string): void {
   productUrl = url;
-  loadedProducts = null;
+  loadedProducts.value = null;
 }
 
 /**
@@ -110,11 +132,11 @@ export async function fetchProductList(): Promise<RadarProduct[]> {
     if (!Array.isArray(raw)) throw new Error('产品目录必须是 JSON 数组');
     const list = raw.map(normalizeProduct);
     if (list.some((p) => p === null)) throw new Error('产品目录存在非法项（缺 id/colorStops 或色标格式错误）');
-    loadedProducts = list as RadarProduct[];
-    return loadedProducts;
+    loadedProducts.value = list as RadarProduct[];
+    return loadedProducts.value;
   } catch (e) {
     console.warn('[productApi] 服务器产品目录(' + productUrl + ')加载失败，回退内置静态目录：', e);
-    loadedProducts = null;
+    loadedProducts.value = null;
     return getStaticProducts();
   }
 }
@@ -125,5 +147,5 @@ export async function fetchProductList(): Promise<RadarProduct[]> {
  * @param id 产品代码，如 'Z'
  */
 export function findProduct(id: string): RadarProduct | undefined {
-  return loadedProducts?.find((p) => p.id === id) ?? getStaticProductById(id);
+  return loadedProducts.value?.find((p) => p.id === id) ?? getStaticProductById(id);
 }

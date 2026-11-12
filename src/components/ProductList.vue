@@ -12,6 +12,7 @@ import {
   appState,
   activeScreen,
   getProductByIdSafe,
+  products,
   setScreenProduct,
   setActiveScreen
 } from '../store/appStore';
@@ -37,7 +38,7 @@ const activeScreenIndex = computed(() => {
 
     <!-- 产品按钮列表 -->
     <ul class="product-list">
-      <li v-for="p in appState.products" :key="p.id">
+      <li v-for="p in products" :key="p.id">
         <button
           class="product-item"
           :class="{ 'item-active': p.id === activeProductId }"

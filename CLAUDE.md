@@ -4,13 +4,13 @@
 - 技术栈：Vite 5 + TypeScript 5.4 + Vue 3.4（script setup）+ QuickEarth 3.2.2（@quickearth/core、@quickearth/leaflet，LMap 继承自 Leaflet L.Map）+ Leaflet 1.9.4
 - 目录结构：
   - `src/parse/`：解析层，把二进制/文本解析为统一网格结构 RadarGrid（mosaic / rstm / m4）；cinradVolume 为 RSTM 门面，rstmRadials（解析）/rstmPolar（取样）/rstmGrid（栅格化）为内部拆分
-  - `src/api/`：接口层；radarApi 为对外门面，radarManifest（清单发现/路径）、radarSource（下载/解压/解析）、radarCache（SharedTask + LruCache）为内部拆分
+  - `src/api/`：接口层；radarApi 为对外门面，radarManifest（清单发现/路径）、radarSource（下载/解压）、radarFormat（格式识别与分派唯一入口）、radarCache（SharedTask + LruCache）、decodeWorker/decodeClient（解码 Worker 与主线程兜底客户端）为内部拆分；productApi 是产品目录唯一事实源（catalogProducts 响应式）
   - `src/render/`：渲染层，`radarRenderer.ts` 把 RadarGrid 渲染为 LPixelLayer 色斑图（bitmap 格点填色 / pixel1 平滑，支持色标范围裁剪）；mapManager 为门面，mapFactory（建图）/baseMap（天地图/国界底图）/mapLink（多屏联动）为内部拆分
   - `src/mapBorder/`：国界底图 GeoJSON（worldGJ 179 国 / chinaGJ 全国 / chinaSJ 42 省，合计约 4MB，`?url` 按需加载）
   - `src/utils/`：datetime（时间）、http（超时 fetch）、range（色标范围换算）
   - `src/store/appStore.ts`：Vue reactive 单例全局状态（多屏 / 产品 / 时间 / 播放）
   - `src/config/products.ts`：内置产品目录（8 个产品：dBZ/dBT/V/W/ZDR/CC/KDP/SNRH，id 即 RSTM 字段名，各配专用色标）
-  - `src/composables/`：useRadarScreen（单屏地图/取数/图层状态机/取样/上传）
+  - `src/composables/`：useRadarScreen（单屏地图/取数/LayerState 图层状态机/取样/上传）、usePlayback（播放定时器 + 下一时次预取）、uploadRouter（跨组件上传路由）
   - `src/components/`：Toolbar / ProductList / Timeline / RadarScreen（薄壳）/ ScreenHeader / CoordinateQuery / Legend
   - `src/utils/datetime.ts`：时间格式转换唯一实现（ISO / 紧凑串 / 显示文本 / formatShortTime）
   - `src/utils/http.ts`：带超时的 fetch 封装（所有网络请求统一入口）
@@ -22,6 +22,58 @@
 - 构建：`vite.config.ts` 的 `build.manualChunks` 将 vue / element-plus / quickearth 拆为独立 vendor chunk（总字节不变，改善缓存与并行加载）。
 
 # 迭代变更日志（按时间倒序）
+
+【2026-11-11 本轮改动（架构优化 P1/P2 批量：Worker 化 + 播放预取 + 缓存共享 + 状态收敛 + 分派统一）】
+
+1. 修改文件：新增 `src/api/radarFormat.ts`、`src/api/decodeWorker.ts`、`src/api/decodeClient.ts`、
+   `src/composables/usePlayback.ts`、`src/api/radarFormat.test.ts`、`src/api/productApi.test.ts`；
+   修改 `src/types/index.ts`、`src/parse/rstmGrid.ts`、`src/parse/cinradVolume.ts`、
+   `src/api/radarSource.ts`、`src/api/radarApi.ts`、`src/api/productApi.ts`、
+   `src/render/radarRenderer.ts`、`src/store/appStore.ts`、`src/composables/useRadarScreen.ts`、
+   `src/components/ProductList.vue`、`src/App.vue`、`src/parse/rstmGrid.test.ts`、
+   `AGENTS.md`、`CLAUDE.md`（本条日志）
+
+2. 修改目的：落实架构评审的 7 项——#5 CPU 密集链路全在主线程同步执行；#6 播放无预取；
+   #7 volumeToGrid 单条缓存易抖动；#8 渲染副本按屏重复构造；#10 产品目录双份状态；
+   #11 useRadarScreen 15 个散落闭包变量；#12 格式识别+解析分派写了两遍。
+
+3. 关键规则沉淀：
+   - ★ #5 解码 Worker（无状态纯计算）★ bz2 解压/二进制解析/栅格化经 decodeClient.runDecode
+     在 Worker 执行（五操作：decompress/parseGrid/parseVolume/parseAny/layerToGrid）；
+     懒创建单例，id↔Promise，signal 只取消等待；Worker 不可用/故障自动回退主线程
+     同一套纯函数（请求 payload 不 transfer 保留兜底能力，响应 buffer transfer 零拷贝）。
+     产品元信息由主线程查好传入（Worker 内没有服务器产品目录）。Node 测试自动走兜底。
+   - ★ #7 栅格化只传单仰角层 ★ GridLayerPayload 把目标层 + 最小体元数据切片为单元素数组，
+     Worker 侧 layerIdx=0；不传整个 volume（上百 MB 克隆会吃掉收益）。
+     rstmGrid 拆为 layerToGrid（纯函数）+ volumeToGrid（同步门面）+ peekVolumeGrid（只查不算）；
+     缓存改 per-volume 小 LRU（6 条，键=层|字段），多屏不同仰角/字段不再互相挤掉。
+     异步业务入口 radarApi.fetchVolumeGrid：LRU 命中直返，miss 交 Worker，结果写回 LRU。
+   - ★ #6 播放预取 ★ usePlayback 从 App.vue 抽出：800ms 定时器（loading 避让不变）+
+     每轮推进后预取下一时次（下载+解析+体数据栅格化进缓存，与 refresh 同键自动合并）；
+     停止播放 abort 预取等待（引用计数取消不连累取数屏），失败静默。
+   - ★ #8 数据源共享 ★ radarRenderer 按 grid 引用+阈值+范围缓存 provider（每 grid 小 LRU 3 条，
+     WeakMap 键随网格 GC 释放）；多屏同口径复用同一份过滤副本，不再 6 屏 6 份。
+   - ★ #10 目录单一事实源 ★ productApi.catalogProducts（ref + computed）是唯一目录状态；
+     store 移除 AppState.products，products 导出 = catalogProducts，setProducts 委托
+     setLoadedProducts；getProductByIdSafe/productExists 统一走 findProduct 查找链。
+     store → api 是向下引用，不违反分层（api 仍禁止 import store）。
+   - ★ #11 LayerState ★ useRadarScreen 的 15 个 layer* 闭包变量收敛为单一 LayerState 对象，
+     写入统一 commitLayer、清空统一 resetLayer（Object.assign 全量复位，不会再漏字段）。
+     顺带修正：体数据图层时次用清单时刻（volume.time 是 UTC 文本，旧写法让服务器 RSTM 的
+     “时间未变→局部更新”永远失效）；拼图仍用 grid.time（文件头交叉校验语义不变）。
+     仰角/字段切换与上传栅格化改 await fetchVolumeGrid，token 判重贯穿每个 await。
+   - ★ #12 分派统一 ★ radarFormat.detectRadarFormat/parseRadarBuffer 成为取数与上传共用的
+     唯一识别/分派入口（strict 区分上传报格式不符 vs 取数兜底）；reconcileMosaicTime 抽出；
+     radarSource 不再持有解析器 import，新增格式只改 radarFormat 一处。
+   - 上传 mosaic 时刻语义微调：与取数链统一为“文件头优先 + 1 分钟容差交叉校验”
+     （原上传路径无条件用文件名时刻）。
+
+4. 验证方式：`npx vue-tsc --noEmit -p tsconfig.json` 通过；`npm test` **14 文件 114 用例**全通过
+   （新增 radarFormat 13 / productApi 4 / rstmGrid LRU+载荷 5）；`npm run build` 成功（6.76s，
+   Worker 独立分包 dist/assets/decodeWorker-*.js 52.84 kB，主包 index-*.js 116.12 kB）；IDE 无报错。
+   ⚠ 需浏览器人工确认：① 播放 bz2 基数据时 UI 不再冻结（解压/解析/栅格化在 Worker）；
+   ② 首轮播放预取生效（第二档起几乎无等待）；③ 多屏不同仰角/产品切换不卡顿；
+   ④ 上传/本地文件/服务器取数三种来源渲染与取值正常；⑤ 产品列表加载与切换正常。
 
 【2026-11-11 本轮改动（架构评审 P0-3/P0-4：状态机复位补全 + AGENTS.md 与代码同步）】
 

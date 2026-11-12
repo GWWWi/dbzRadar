@@ -12,11 +12,11 @@
     │ Timeline（时间轴，作用于激活屏/全部屏） │
     └────────────────────────────────────┘
 
-  播放定时器也在这里：playing=true 时每 800ms 推进激活屏一个时次
-  （syncPlay 开启时 appStore 会自动广播到所有屏）。
+  播放编排在 composables/usePlayback：playing=true 时每 800ms 推进激活屏
+  一个时次（syncPlay 开启时广播全部屏），并预取下一时次的数据进缓存。
 -->
 <script setup lang="ts">
-import { onMounted, onBeforeUnmount, watch } from 'vue';
+import { onMounted, onBeforeUnmount } from 'vue';
 import { ElMessage } from 'element-plus';
 import Toolbar from './components/Toolbar.vue';
 import ProductList from './components/ProductList.vue';
@@ -35,13 +35,17 @@ import {
   setDataSourceMode
 } from './store/appStore';
 import { fetchProductList } from './api/productApi';
-import { clearGridCache, clearVolumeCache, fetchRadarFileList } from './api/radarApi';
+import { clearGridCache, clearVolumeCache, fetchRadarFileList, terminateDecodeWorker } from './api/radarApi';
 import { fetchAppConfig, buildTimelineTimes, fetchLatestTime, snapNearestTime } from './api/configApi';
+import { usePlayback } from './composables/usePlayback';
 // 提示文案统一走 constants/messages
 import { APP_MSG } from './constants/messages';
 
 /** 网格布局 class：决定多屏排列方式 */
 const gridClass = () => `grid-${appState.layout}`;
+
+// 播放定时器 + 下一时次预取（卸载时自动停止）
+usePlayback();
 
 /* —— 应用启动：拉取产品目录；配置模式生成时间轴，无配置回退清单模式 —— */
 onMounted(async () => {
@@ -93,38 +97,13 @@ onMounted(async () => {
   }
 });
 
-/* —— 播放动画：每 800ms 推进一个时次（循环） —— */
-let timer: number | undefined;
-watch(
-  () => appState.playing,
-  (playing) => {
-    if (timer) {
-      clearInterval(timer);
-      timer = undefined;
-    }
-    if (playing) {
-      timer = window.setInterval(() => {
-        const times = timelineTimes.value;
-        if (times.length === 0) return;
-        // 上一时次仍在加载时不推进：避免 800ms 内堆积多个请求/解析任务。
-        // 同步播放时所有屏一起推进，需要等全部完成；独立播放只看激活屏。
-        const waitingScreens = appState.syncPlay ? appState.screens : [activeScreen.value];
-        if (waitingScreens.some((s) => s.loading)) return;
-        // 取当前屏时间在时间轴上的下一个时次（到尾则回头）
-        const cur = times.indexOf(activeScreen.value.time);
-        const next = times[(cur + 1 + times.length) % times.length];
-        setScreenTime(appState.activeScreenId, next);
-      }, 800);
-    }
-  }
-);
-
+/* —— 应用卸载：释放缓存与解码 Worker —— */
 onBeforeUnmount(() => {
-  if (timer) clearInterval(timer);
   // 生产页面卸载/内嵌场景释放模块级大对象；开发 HMR 跳过，避免每次热更新清空缓存
   if (!import.meta.hot) {
     clearGridCache();
     clearVolumeCache();
+    terminateDecodeWorker();
   }
 });
 </script>

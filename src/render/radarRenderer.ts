@@ -110,10 +110,33 @@ function buildDisplayValues(
   return out;
 }
 
+/* ─────────────── 数据源共享缓存（多屏同口径复用） ─────────────── */
+
 /**
- * 按指定显示阈值构造 QE 内存数据源。
+ * 每个原始网格最多缓存的数据源条数（不同阈值/范围组合）。
+ * 3 条覆盖“全范围 + 两个常用裁剪范围”；单条约 6.7MB（168 万点副本），
+ * 网格被 LRU 淘汰/GC 后其数据源随之释放（WeakMap 键）。
+ */
+const PROVIDER_CACHE_LIMIT = 3;
+
+interface ProviderEntry {
+  threshold: number;
+  rangeKey: string;
+  provider: IGridDataProvider;
+}
+
+/** grid → 数据源 LRU（键 = 阈值 + 范围；Map 迭代序即使用序） */
+const providerCaches = new WeakMap<RadarGrid, Map<string, ProviderEntry>>();
+
+/**
+ * 按指定显示阈值构造 QE 内存数据源（同网格同口径多屏共享）。
  *
- * 数据源内部持有的是“已过滤副本”，所以阈值一旦变化就必须重建 provider
+ * ★ 为什么共享 ★
+ *   多屏同步看同一时次同一产品时，每屏各自构造一份“过滤副本 + provider”
+ *   是纯浪费（6 屏 = 6 份 6.7MB 副本 + 6 次全量遍历）。数据源只读，
+ *   按 grid 引用 + 阈值 + 范围缓存后，后续屏直接复用同一 provider。
+ *
+ * 数据源内部持有的是“已过滤副本”，所以阈值/范围一旦变化就必须重建
  * （setDataSource）；只调 setDrawOptions 不会让已过滤的数据恢复。
  *
  * @param grid      原始网格（只读，函数内不修改）
@@ -121,6 +144,39 @@ function buildDisplayValues(
  * @param range     用户选择的数值范围；null/undefined 表示全范围
  */
 function createProvider(
+  grid: RadarGrid,
+  threshold: number,
+  range?: ValueRange | null
+): IGridDataProvider {
+  const rangeKey = valueRangeKey(range ?? null);
+  const key = threshold + '|' + rangeKey;
+
+  let cache = providerCaches.get(grid);
+  if (cache) {
+    const hit = cache.get(key);
+    if (hit) {
+      // 命中提升为最近使用
+      cache.delete(key);
+      cache.set(key, hit);
+      return hit.provider;
+    }
+  } else {
+    cache = new Map();
+    providerCaches.set(grid, cache);
+  }
+
+  const provider = buildProvider(grid, threshold, range);
+  cache.set(key, { threshold, rangeKey, provider });
+  while (cache.size > PROVIDER_CACHE_LIMIT) {
+    const oldest = cache.keys().next().value;
+    if (oldest === undefined) break;
+    cache.delete(oldest);
+  }
+  return provider;
+}
+
+/** 真正构造数据源：在副本上过滤弱值与范围外数值（不修改原始网格） */
+function buildProvider(
   grid: RadarGrid,
   threshold: number,
   range?: ValueRange | null

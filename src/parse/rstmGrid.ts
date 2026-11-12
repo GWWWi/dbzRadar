@@ -4,14 +4,21 @@
  * 转换口径与 rstmPolar.sampleRstmValue 完全一致（最近邻），
  * 因此“图上颜色”与“点击取值”不会互相矛盾。
  *
- * ★ 单条缓存 ★
- *   多屏同步时 6 个屏通常请求同一 volume + 仰角 + 字段；栅格化一次约
- *   70 万点，重复计算代价高。这里用 WeakMap 只缓存“最近一次”结果
- *   （约 3MB/volume），既能让多屏复用，又不会把 9 层 × 8 字段全部驻留内存。
+ * ★ 分层：纯计算与缓存分离 ★
+ *   - layerToGrid：纯函数（输入层数据 + 参数 → 网格），可在解码 Worker 里跑，
+ *     70 万点三角换算不再阻塞主线程；
+ *   - volumeToGrid：同步门面 = 小 LRU 命中查询 + miss 时主线程计算（兜底/测试用）；
+ *   - peekVolumeGrid：只查缓存不计算，供异步链路（radarApi.fetchVolumeGrid）
+ *     命中时直接返回、miss 时把单层载荷交给 Worker。
+ *
+ * ★ per-volume 小 LRU（而非单条缓存）★
+ *   多屏不同仰角/不同产品对比时，单条缓存会被交替请求互相挤掉，
+ *   每次 70 万点重算。现按 volume 缓存最近 6 条（键 = 层索引|字段，约 3MB/条），
+ *   覆盖典型多屏对比组合；volume 被 GC 时其缓存随之释放（WeakMap）。
  *   返回的 RadarGrid 只读：渲染层在副本上过滤弱值，取值函数只读。
  */
 import { UNDEF } from '../constants';
-import type { RadarGrid, RstmRadial, RstmVolume } from '../types';
+import type { GridLayerPayload, RadarGrid, RstmRadial, RstmVolume } from '../types';
 import type { RstmField } from './rstmRadials';
 import {
   findNearestRadialIndex,
@@ -161,34 +168,86 @@ export function groundToSlantFast(groundRange: number, elevationDeg: number): nu
   return s0 + ((groundRange - g0) / (g1 - g0)) * (s1 - s0);
 }
 
-/** volume → 最近一次栅格化结果（key = 层索引|字段） */
-const lastGridCache = new WeakMap<RstmVolume, { key: string; grid: RadarGrid }>();
+/* ─────────────── per-volume 栅格化缓存（小 LRU） ─────────────── */
 
 /**
- * 把某一仰角层的极坐标数据转换为等经纬度网格（RadarGrid），
- * 以便复用现有渲染 / 范围过滤 / 点击取值链路。
+ * 每个 volume 最多缓存的网格条数。
+ * 6 条覆盖典型多屏对比（如 4 屏不同仰角 + 2 个产品）；约 3MB/条，
+ * 上限约 18MB/volume，不会把 9 层 × 8 字段全部驻留内存。
+ */
+export const GRID_CACHE_LIMIT = 6;
+
+/** volume → 栅格化结果 LRU（键 = 层索引|字段；Map 迭代序即使用序） */
+const gridCaches = new WeakMap<RstmVolume, Map<string, RadarGrid>>();
+
+/** 缓存键：层索引按体数据实际层数钳制后与字段拼接（与计算口径一致） */
+function gridCacheKey(volume: RstmVolume, layerIdx: number, field: RstmField): string {
+  const li = Math.min(Math.max(layerIdx, 0), volume.layers.length - 1);
+  return li + '|' + field;
+}
+
+/**
+ * 只查缓存不计算（命中会提升为最近使用）。
+ * 供异步链路使用：命中直接返回，miss 时把单层载荷交给 Worker 栅格化，
+ * 避免“为了查缓存先在主线程算一遍”的浪费。
+ */
+export function peekVolumeGrid(
+  volume: RstmVolume,
+  layerIdx: number,
+  field: RstmField
+): RadarGrid | null {
+  const cache = gridCaches.get(volume);
+  if (!cache) return null;
+  const key = gridCacheKey(volume, layerIdx, field);
+  const hit = cache.get(key);
+  if (!hit) return null;
+  cache.delete(key);
+  cache.set(key, hit);
+  return hit;
+}
+
+/** 写入栅格化结果（Worker 算完后由主线程调用；同键覆盖，超上限淘汰最旧） */
+export function rememberVolumeGrid(
+  volume: RstmVolume,
+  layerIdx: number,
+  field: RstmField,
+  grid: RadarGrid
+): void {
+  let cache = gridCaches.get(volume);
+  if (!cache) {
+    cache = new Map();
+    gridCaches.set(volume, cache);
+  }
+  const key = gridCacheKey(volume, layerIdx, field);
+  cache.delete(key);
+  cache.set(key, grid);
+  while (cache.size > GRID_CACHE_LIMIT) {
+    const oldest = cache.keys().next().value;
+    if (oldest === undefined) break;
+    cache.delete(oldest);
+  }
+}
+
+/**
+ * 把某一仰角层的极坐标数据转换为等经纬度网格（纯函数，无缓存）。
  *
- * 转换口径与 sampleRstmValue 完全一致（最近邻），
- * 因此“图上颜色”与“点击取值”不会互相矛盾。
+ * 转换口径与 sampleRstmValue 完全一致（最近邻）。
+ * 输入兼容完整 RstmVolume 与单层载荷 GridLayerPayload（Worker 传输用，
+ * 数组已按层切片为单元素，layerIdx 传 0）。
  *
- * @param volume   解析得到的基数据体
+ * @param volume   基数据体或单层栅格化载荷
  * @param layerIdx 仰角层序号（越界自动钳制）
  * @param field    取哪个字段（默认滤波后反射率 dBZ）
  * @returns RadarGrid；该层无有效数据时返回 null
  */
-export function volumeToGrid(
-  volume: RstmVolume,
+export function layerToGrid(
+  volume: RstmVolume | GridLayerPayload,
   layerIdx = 0,
   field: RstmField = 'dBZ'
 ): RadarGrid | null {
   const li = Math.min(Math.max(layerIdx, 0), volume.layers.length - 1);
   const layer = volume.layers[li];
   if (!layer || layer.length === 0) return null;
-
-  // 多屏同层同字段：直接复用上一次结果（只缓存 1 条，避免 9×8 份网格驻留）
-  const cacheKey = li + '|' + field;
-  const cached = lastGridCache.get(volume);
-  if (cached && cached.key === cacheKey) return cached.grid;
 
   const gateSize = volume.gateSizes[li];
   const startRange = volume.startRanges[li];
@@ -275,6 +334,51 @@ export function volumeToGrid(
     data,
     isSynthetic: false
   };
-  lastGridCache.set(volume, { key: cacheKey, grid });
   return grid;
+}
+
+/**
+ * 同步门面：缓存命中直接返回，miss 时在主线程计算并写入缓存。
+ * 保留给兜底/测试路径；业务取数请优先用 radarApi.fetchVolumeGrid
+ * （miss 时把计算交给 Worker，不阻塞 UI）。
+ */
+export function volumeToGrid(
+  volume: RstmVolume,
+  layerIdx = 0,
+  field: RstmField = 'dBZ'
+): RadarGrid | null {
+  const cached = peekVolumeGrid(volume, layerIdx, field);
+  if (cached) return cached;
+  const grid = layerToGrid(volume, layerIdx, field);
+  if (grid) rememberVolumeGrid(volume, layerIdx, field, grid);
+  return grid;
+}
+
+/**
+ * 构造交给 Worker 的单层栅格化载荷（只克隆目标层，不传整个 volume）。
+ * 数组按层切片为单元素，Worker 侧以 layerIdx=0 调用 layerToGrid。
+ * 层号越界时返回 null（与 layerToGrid 的钳制口径一致，调用方无需再判）。
+ */
+export function buildGridLayerPayload(
+  volume: RstmVolume,
+  layerIdx: number
+): GridLayerPayload | null {
+  const li = Math.min(Math.max(layerIdx, 0), volume.layers.length - 1);
+  const layer = volume.layers[li];
+  if (!layer || layer.length === 0) return null;
+  return {
+    stationId: volume.stationId,
+    stationName: volume.stationName,
+    lat: volume.lat,
+    lon: volume.lon,
+    time: volume.time,
+    gateSize: volume.gateSizes[li],
+    gateCounts: [volume.gateCounts[li] ?? 0],
+    gateSizes: [volume.gateSizes[li]],
+    startRanges: [volume.startRanges[li]],
+    maxRanges: [volume.maxRanges[li]],
+    nyquists: [volume.nyquists[li] ?? 0],
+    elevations: volume.elevations,
+    layers: [layer]
+  };
 }

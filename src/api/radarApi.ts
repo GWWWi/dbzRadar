@@ -23,11 +23,19 @@ import type { RadarFileMeta, RadarGrid, RstmVolume } from '../types';
 import { abortError, createSharedTask, joinSharedTask, LruCache } from './radarCache';
 import type { SharedTask } from './radarCache';
 import { clearFallbackBuffers, loadGrid, loadVolume } from './radarSource';
+import { runDecode } from './decodeClient';
+import {
+  buildGridLayerPayload,
+  peekVolumeGrid,
+  rememberVolumeGrid
+} from '../parse/cinradVolume';
+import type { RstmField } from '../parse/cinradVolume';
 
 // —— 兼容导出：调用方继续从 radarApi 导入 ——
 export { RadarFileMissingError, UploadFileError, parseUploadedFile } from './radarSource';
 export type { UploadErrorReason } from './radarSource';
 export { buildFileMetaFromTemplate, fetchRadarFileList } from './radarManifest';
+export { terminateDecodeWorker } from './decodeClient';
 
 /* ───────────────────────── 网格缓存 ───────────────────────── */
 
@@ -222,4 +230,48 @@ export function clearVolumeCache(): void {
 /** 当前体数据缓存条数（调试/测试用） */
 export function volumeCacheSize(): number {
   return volumeCache.size;
+}
+
+/* ───────────── RSTM 体数据 → 网格（Worker 栅格化 + 主线程 LRU） ───────────── */
+
+/**
+ * 把体数据的某仰角层栅格化为 RadarGrid（异步，计算在 Worker）。
+ *
+ * 三条路径：
+ *   1. 主线程 per-volume LRU 命中 → 直接返回（多屏同层同字段零成本）；
+ *   2. miss → 只把目标层载荷交给 Worker 栅格化（不传整个 volume），
+ *      结果写回 LRU；70 万点三角换算不再阻塞 UI；
+ *   3. Worker 不可用 → decodeClient 自动回退主线程同步计算（功能不缺失）。
+ *
+ * ★ 返回对象共享只读 ★ 与 fetchRadarGrid 同契约：多屏复用同一引用，
+ * 调用方不得修改 grid.data / undef / time。
+ *
+ * @param volume  已解析的基数据体（来自 fetchRstmVolume / 上传）
+ * @param layerIdx 仰角层序号（越界自动钳制，与 volumeToGrid 口径一致）
+ * @param field   目标字段（产品 id 即字段名）
+ * @param signal  取消信号：只取消本次等待，不影响其它屏
+ * @returns RadarGrid；该层无有效数据时返回 null
+ */
+export async function fetchVolumeGrid(
+  volume: RstmVolume,
+  layerIdx: number,
+  field: RstmField,
+  signal?: AbortSignal
+): Promise<RadarGrid | null> {
+  const li = Math.min(Math.max(layerIdx, 0), volume.layers.length - 1);
+
+  const cached = peekVolumeGrid(volume, li, field);
+  if (cached) {
+    if (signal?.aborted) throw abortError();
+    return cached;
+  }
+
+  const payload = buildGridLayerPayload(volume, li);
+  if (!payload) return null;
+  payload.field = field;
+
+  const grid = await runDecode('layerToGrid', payload, signal);
+  // null = 该层无有效数据：不写缓存（与 volumeToGrid 一致，下次仍可重试）
+  if (grid) rememberVolumeGrid(volume, li, field, grid);
+  return grid;
 }

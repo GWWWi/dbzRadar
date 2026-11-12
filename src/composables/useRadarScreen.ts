@@ -7,6 +7,16 @@
  *   - 并发控制：refreshToken + inflight abort；
  *   - 点击/坐标取值、上传文件识别与渲染。
  *
+ * ★ 图层状态收敛为单一 LayerState 对象 ★
+ *   原先 15 个散落的闭包变量（layerGrid/layerTime/layerProductId/…）由
+ *   refresh / applyParsedData / clearLayer 三处手工同步，漏一个就会让
+ *   判重误判（曾漏复位 layerSmooth）。现在所有判重字段集中在 LayerState，
+ *   写入统一走 commitLayer、清空统一走 resetLayer，与图层同生命周期。
+ *
+ * ★ CPU 密集计算不在主线程 ★ 解压/解析/栅格化经 api 层的 Worker 链路
+ * （fetchRadarGrid / fetchRstmVolume / fetchVolumeGrid），本文件只 await
+ * 结果并用 token 判重；Worker 不可用时 api 层自动回退主线程，行为不变。
+ *
  * 组件只负责布局与子组件组合；本文件不返回响应式图层对象
  * （map/layer/grid 用普通变量保存，避免被 Vue 代理）。
  */
@@ -37,6 +47,7 @@ import { valueRangeKey } from '../utils/range';
 import {
   fetchRadarGrid,
   fetchRstmVolume,
+  fetchVolumeGrid,
   buildFileMetaFromTemplate,
   parseUploadedFile,
   RadarFileMissingError,
@@ -54,7 +65,6 @@ import {
   UPLOAD_MSG,
   uploadDataLabel
 } from '../constants/messages';
-import { volumeToGrid } from '../parse/cinradVolume';
 // 取值逻辑（字段映射 / 原始值 / 九点均值 / 可见性）已抽成纯函数，便于单测
 import { fieldForProduct, queryValue } from '../parse/valueQuery';
 import { ElMessage } from 'element-plus';
@@ -63,6 +73,7 @@ import type { LMap, LPixelLayer } from '@quickearth/leaflet';
 import type {
   RadarFileFormat,
   RadarGrid,
+  RadarProduct,
   RadarQueryResult,
   RstmVolume,
   ValueRange
@@ -114,6 +125,104 @@ function noDataStatus(time: string): string {
   return noDataText(nearestAvailableLabel(time));
 }
 
+/* ───────────────────────── 图层状态（单一对象） ───────────────────────── */
+
+/**
+ * 当前屏已渲染图层的完整快照。
+ * ★ 所有判重字段集中于此，与图层同生命周期 ★
+ * 写入统一走 commitLayer，清空统一走 resetLayer；新增判重字段时
+ * 只需改这两个函数，不会再出现“漏复位某个变量”的漂移。
+ * 非响应式对象（QE 图层 / 网格 / 体数据）禁止放进 reactive。
+ */
+interface LayerState {
+  /** QE 像素图层实例 */
+  qe: LPixelLayer | null;
+  /** 图层对应的原始网格（只读共享对象） */
+  grid: RadarGrid | null;
+  /** 图层对应的时次（判重键；体数据用清单时刻，见 commitLayer 调用处说明） */
+  time: string;
+  /** 渲染时的产品 id */
+  productId: string;
+  /** 渲染时的弱值阈值 */
+  threshold: number;
+  /** 渲染时的平滑开关 */
+  smooth: boolean;
+  /** 渲染时的色标范围（null=全范围） */
+  range: ValueRange | null;
+  /** 真实数据格式（按内容识别）：仅用于坐标查询说明取值口径 */
+  format: RadarFileFormat | null;
+  /** 当前文件是否 .bz2 压缩（只影响传输，不影响数值） */
+  compressed: boolean;
+  /** RSTM 基数据体（9 仰角层）：非 null 表示支持仰角切换 */
+  volume: RstmVolume | null;
+  /** 渲染时的仰角索引（-1 = 非体数据） */
+  elevation: number;
+}
+
+/** 创建空白图层状态（初始/清空后的统一形态） */
+function createLayerState(): LayerState {
+  return {
+    qe: null,
+    grid: null,
+    time: '',
+    productId: '',
+    threshold: Number.NEGATIVE_INFINITY,
+    smooth: false,
+    range: null,
+    format: null,
+    compressed: false,
+    volume: null,
+    elevation: -1
+  };
+}
+
+/**
+ * 清空图层与取值数据（“该时次无数据”“加载失败”场景）。
+ * 必须同时清掉旧画面与全部判重字段，否则屏幕残留旧色斑图、
+ * 点击取值返回旧数值，与状态提示矛盾。
+ */
+function resetLayer(map: LMap | null, layer: LayerState, screenId: number): void {
+  removeRadar(map, layer.qe);
+  const fresh = createLayerState();
+  Object.assign(layer, fresh);
+  // 画面已清空：示意数据警示必须一起撤下，否则空屏仍挂着红色标记
+  setScreenSynthetic(screenId, false);
+}
+
+/**
+ * 渲染新图层并把全部判重字段一次性写入（唯一的图层提交入口）。
+ *
+ * @param opts.time      图层对应的时次（判重键）
+ * @param opts.elevation 渲染时的仰角索引（非体数据传 -1）
+ * @param opts.volume    体数据；不传表示沿用当前值（局部重栅格化场景）
+ */
+function commitLayer(
+  map: LMap,
+  layer: LayerState,
+  screenId: number,
+  grid: RadarGrid,
+  product: RadarProduct,
+  opts: {
+    time: string;
+    smooth: boolean;
+    range: ValueRange | null;
+    elevation: number;
+    volume?: RstmVolume | null;
+  }
+): void {
+  layer.grid = grid;
+  layer.qe = renderRadar(map, grid, product, opts.smooth, opts.range);
+  layer.time = opts.time;
+  layer.productId = product.id;
+  layer.threshold = firstVisibleThreshold(product);
+  layer.smooth = opts.smooth;
+  layer.range = opts.range;
+  if (opts.volume !== undefined) layer.volume = opts.volume;
+  layer.elevation = opts.elevation;
+  // 合成兜底（文件未能真实解码）→ 独立红色警示，与状态文本并存
+  setScreenSynthetic(screenId, grid.isSynthetic === true);
+}
+
 /**
  * @param screenId 屏的稳定 id（不是数组下标）
  */
@@ -122,27 +231,10 @@ export function useRadarScreen(screenId: number) {
   const mapElId = 'radar-map-' + screenId;
   const elRef = ref<HTMLDivElement | null>(null);
 
-  /* 地图 / 图层实例（非响应式对象，仅作引用保存） */
+  /* 地图实例（非响应式对象，仅作引用保存）；图层状态集中在 LayerState */
   let map: LMap | null = null;
-  let layer: LPixelLayer | null = null;
-  /* 当前图层对应的数据与“版本”标记，用于判重避免无意义重建 */
-  let layerGrid: RadarGrid | null = null;
-  let layerTime = '';
-  let layerProductId = '';
-  let layerThreshold = Number.NEGATIVE_INFINITY; // 当前图层渲染时的弱值阈值
-  let layerSmooth = false;                       // 当前图层渲染时的平滑开关（每屏独立）
-  let layerRange: ValueRange | null = null;      // 当前图层使用的色标数值范围（null=全范围）
-  /** 当前图层的真实数据格式（按内容识别）：仅用于坐标查询说明取值口径 */
-  let layerFormat: RadarFileFormat | null = null;
-  /** 当前文件是否为 .bz2 压缩包（只影响传输，不影响数值） */
-  let layerCompressed = false;
-  /**
-   * 当前数据的 RSTM 基数据体（9 仰角层）：非 null 表示本屏数据支持仰角切换。
-   * 普通拼图 / m4 / 合成 RSTM 为 null（无仰角维度）。
-   */
-  let currentVolume: RstmVolume | null = null;
-  /** 当前图层使用的仰角索引（-1 表示尚未渲染过仰角数据） */
-  let layerElevation = -1;
+  const layer = createLayerState();
+
   /** 上一次自动定位使用的数据范围（同范围不重复定位，避免打断用户的缩放/平移） */
   let fittedBounds: L.LatLngBounds | null = null;
 
@@ -162,28 +254,6 @@ export function useRadarScreen(screenId: number) {
    * abort 上一个请求，配合 refreshToken 形成「取消 + 丢弃」双保险。
    */
   let inflight: AbortController | null = null;
-
-  /**
-   * 清空本屏图层与取值数据。
-   * 用于“该时次无数据”“加载失败”两种场景：必须同时清掉旧画面与 layerGrid，
-   * 否则屏幕仍显示上一时次的色斑图，点击取值还会返回旧数值，与状态提示矛盾。
-   */
-  function clearLayer(): void {
-    removeRadar(map, layer);
-    layer = null;
-    layerGrid = null;
-    layerTime = '';
-    layerProductId = '';
-    layerThreshold = Number.NEGATIVE_INFINITY;
-    layerSmooth = false;
-    layerRange = null;
-    layerFormat = null;
-    layerCompressed = false;
-    currentVolume = null;
-    layerElevation = -1;
-    // 画面已清空：示意数据警示必须一起撤下，否则空屏仍挂着红色标记
-    setScreenSynthetic(screenId, false);
-  }
 
   /**
    * 根据数据网格的地理范围自动定位地图。
@@ -253,15 +323,15 @@ export function useRadarScreen(screenId: number) {
 
     // 完全没变化 → 跳过（此时 token 已自增，顺带作废可能的过期在途请求）
     // ★ 仰角只在体数据下参与判重 ★
-    //   非体数据 layerElevation 恒为 -1，若无条件比较会永远判为“有变化”，
+    //   非体数据 elevation 恒为 -1，若无条件比较会永远判为“有变化”，
     //   白白重走局部更新；体数据则必须比较，否则切换仰角会被这里直接跳过（无响应）。
     if (
-      layer &&
-      layerTime === sc.time &&
-      layerProductId === product.id &&
-      layerSmooth === sc.smooth &&
-      valueRangeKey(layerRange) === valueRangeKey(range) &&
-      (!currentVolume || layerElevation === sc.elevationIndex)
+      layer.qe &&
+      layer.time === sc.time &&
+      layer.productId === product.id &&
+      layer.smooth === sc.smooth &&
+      valueRangeKey(layer.range) === valueRangeKey(range) &&
+      (!layer.volume || layer.elevation === sc.elevationIndex)
     ) {
       return;
     }
@@ -271,45 +341,54 @@ export function useRadarScreen(screenId: number) {
       // ★ 必须先于文件清单解析 ★
       //   上传数据只标记为本屏当前时次，其文件并不在数据服务清单里；
       //   若先按清单匹配会误判“该时次无数据”并清空上传画面（表现为切换仰角无响应）。
-      if (layer && layerGrid && layerTime === sc.time) {
+      if (layer.qe && layer.grid && layer.time === sc.time) {
+        const qe = layer.qe;
+
         // ① 体数据（RSTM 基数据）：仰角或产品（字段）变化 → 重新栅格化并重建图层。
         //    仰角层 + 字段共同决定栅格内容，仅换色标（updateRadarProduct）会画出错误数据；
-        //    只重建图层，不重新下载/解压（36MB 文件 + 1.5s 解压不能每次切换都来一遍）。
+        //    栅格化在 Worker 里执行（fetchVolumeGrid），只重建图层，不重新下载/解压。
         if (
-          currentVolume &&
-          (layerElevation !== sc.elevationIndex || layerProductId !== product.id)
+          layer.volume &&
+          (layer.elevation !== sc.elevationIndex || layer.productId !== product.id)
         ) {
-          const grid = volumeToGrid(currentVolume, sc.elevationIndex, fieldForProduct(product.id));
-          if (!grid) return; // 该层 / 该字段无有效数据时保持原画面
-          removeRadar(map, layer);
-          layerGrid = grid;
-          layer = renderRadar(map, grid, product, sc.smooth, range);
-          layerElevation = sc.elevationIndex;
-          layerProductId = product.id;
-          layerThreshold = firstVisibleThreshold(product);
-          layerSmooth = sc.smooth;
-          layerRange = range;
+          setScreenLoading(screenId, true);
+          const grid = await fetchVolumeGrid(
+            layer.volume,
+            sc.elevationIndex,
+            fieldForProduct(product.id)
+          );
+          if (token !== refreshToken) return;
+          setScreenLoading(screenId, false);
+          if (!grid || !layer.qe) return; // 该层 / 该字段无有效数据时保持原画面
+          removeRadar(map, layer.qe);
+          commitLayer(map, layer, screenId, grid, product, {
+            time: sc.time,
+            smooth: sc.smooth,
+            range,
+            elevation: sc.elevationIndex
+            // volume 不传：沿用当前体数据
+          });
           // 不同仰角层 / 字段的数据范围可能不同，重新定位到新数据范围
           fitToGrid(grid);
           return;
         }
 
         // ② 产品变化（阈值可能变）+ 范围可能同时变化：统一按原始网格重建过滤口径
-        if (layerProductId !== product.id) {
-          updateRadarProduct(layer, layerGrid, layerThreshold, product, sc.smooth, range, layerRange);
-          layerProductId = product.id;
-          layerThreshold = firstVisibleThreshold(product);
-          layerRange = range;
-        } else if (valueRangeKey(layerRange) !== valueRangeKey(range)) {
+        if (layer.productId !== product.id) {
+          updateRadarProduct(qe, layer.grid, layer.threshold, product, sc.smooth, range, layer.range);
+          layer.productId = product.id;
+          layer.threshold = firstVisibleThreshold(product);
+          layer.range = range;
+        } else if (valueRangeKey(layer.range) !== valueRangeKey(range)) {
           // ③ 仅范围变化：必须重建数据源（放宽范围时要恢复之前被裁掉的值），
           //    并强制刷新绘制选项触发 GL 重绘（只换数据源画面不会立即更新）
-          updateRadarRange(layer, layerGrid, product, sc.smooth, range);
-          layerRange = range;
-        } else if (layerSmooth !== sc.smooth) {
+          updateRadarRange(qe, layer.grid, product, sc.smooth, range);
+          layer.range = range;
+        } else if (layer.smooth !== sc.smooth) {
           // ④ 仅平滑开关变化
-          updateRadarSmooth(layer, product, sc.smooth);
+          updateRadarSmooth(qe, product, sc.smooth);
         }
-        layerSmooth = sc.smooth;
+        layer.smooth = sc.smooth;
         return;
       }
 
@@ -321,7 +400,8 @@ export function useRadarScreen(screenId: number) {
         setScreenStatus(screenId, STATUS.loading, 'busy');
         const data = await parseUploadedFile(localFile, product.id);
         if (token !== refreshToken) return;
-        applyParsedData(data, localFile.name);
+        await applyParsedData(data, localFile.name, token);
+        if (token !== refreshToken) return;
         setScreenLoading(screenId, false);
         return;
       }
@@ -330,7 +410,7 @@ export function useRadarScreen(screenId: number) {
       // 走到这里说明是首次进入或切换了时次（同屏局部更新已在上面返回）：
       // 清空画面等待用户上传，只有上传时的那个时次有画面。
       if (appState.dataSourceMode === 'upload') {
-        clearLayer();
+        resetLayer(map, layer, screenId);
         // 必须给出解释：否则切时次后画面凭空变空白，用户会当成加载失败
         setScreenStatus(screenId, STATUS.uploadModeHint);
         return;
@@ -343,7 +423,7 @@ export function useRadarScreen(screenId: number) {
         : (appState.files.find((f) => f.time === sc.time) ?? null);
       if (!file) {
         // 无数据时必须清掉上一时次的画面，否则屏上残留旧色斑图却提示“无数据”
-        clearLayer();
+        resetLayer(map, layer, screenId);
         // 顺手给出最近可用时次，用户不必自己一个个试
         setScreenStatus(screenId, noDataStatus(sc.time), 'warn');
         return;
@@ -365,7 +445,12 @@ export function useRadarScreen(screenId: number) {
       if (file.format === 'rstm') {
         volume = await fetchRstmVolume(file, signal);
         if (volume) {
-          grid = volumeToGrid(volume, sc.elevationIndex, fieldForProduct(product.id)) as RadarGrid;
+          grid = (await fetchVolumeGrid(
+            volume,
+            sc.elevationIndex,
+            fieldForProduct(product.id),
+            signal
+          )) as RadarGrid;
         } else {
           setScreenElevations(screenId, []);
           grid = await fetchRadarGrid(file, product.id, signal);
@@ -379,27 +464,26 @@ export function useRadarScreen(screenId: number) {
       if (token !== refreshToken) return;
 
       // 仰角列表写进 store：非空时屏头显示仰角选择器
-      currentVolume = volume;
-      layerElevation = volume ? sc.elevationIndex : -1;
       if (volume) setScreenElevations(screenId, volume.elevations);
 
-      removeRadar(map, layer);
-      layerGrid = grid;
-      layer = renderRadar(map, grid, product, sc.smooth, range);
-      layerTime = grid.time;
-      layerProductId = product.id;
-      layerThreshold = firstVisibleThreshold(product);
-      layerSmooth = sc.smooth;
-      layerRange = range;
+      removeRadar(map, layer.qe);
+      commitLayer(map, layer, screenId, grid, product, {
+        // ★ 体数据用清单时刻作为图层时次 ★ volume.time 是径向时间的 UTC 文本，
+        //   与清单时刻不一致，若用它做判重键会让“时间未变 → 局部更新”永远失效；
+        //   非体数据沿用 grid.time（拼图以文件头时间为准的交叉校验语义不变）。
+        time: volume ? sc.time : grid.time,
+        smooth: sc.smooth,
+        range,
+        volume,
+        elevation: volume ? sc.elevationIndex : -1
+      });
       // 数据加载完成 → 按数据范围定位（同区域切时次不会重置用户视野）
       fitToGrid(grid);
       setScreenLoading(screenId, false);
       setScreenStatus(screenId, '');
-      // 合成兜底（文件未能真实解码）→ 独立红色警示，与状态文本并存
-      setScreenSynthetic(screenId, grid.isSynthetic === true);
       // 记录真实格式与压缩标记：坐标查询据此说明“这个值是怎么取来的”
-      layerFormat = grid.format ?? (volume ? 'rstm' : file.format);
-      layerCompressed = Boolean(file.compressed) || /\.bz2$/i.test(file.binFile);
+      layer.format = grid.format ?? (volume ? 'rstm' : file.format);
+      layer.compressed = Boolean(file.compressed) || /\.bz2$/i.test(file.binFile);
     } catch (e) {
       // 过期请求的失败同样不能影响当前屏的状态
       if (token !== refreshToken) return;
@@ -412,7 +496,7 @@ export function useRadarScreen(screenId: number) {
       }
       console.error('[useRadarScreen] 渲染失败：', e);
       // 失败时保留旧画面会让用户误读成“该时次的数据”，因此一并清空
-      clearLayer();
+      resetLayer(map, layer, screenId);
       // 404（模板模式时间轴时次未必有文件）→ 提示无数据（warn）；其余（含超时）→ 加载失败（error）
       if (e instanceof RadarFileMissingError) {
         setScreenStatus(screenId, noDataStatus(sc.time), 'warn');
@@ -449,9 +533,9 @@ export function useRadarScreen(screenId: number) {
       lat,
       lon,
       product,
-      volume: currentVolume,
-      elevationIndex: layerElevation,
-      grid: layerGrid,
+      volume: layer.volume,
+      elevationIndex: layer.elevation,
+      grid: layer.grid,
       range: screen.value?.valueRange ?? null,
       threshold: firstVisibleThreshold(product)
     });
@@ -459,13 +543,13 @@ export function useRadarScreen(screenId: number) {
     // 数据来源与取值口径：不同格式（m4 / 拼图 / RSTM）同点数值本就不同，必须随结果给出。
     // 本屏还没有任何数据时不给出处（避免显示“来源未知”这种无信息量的一行）
     const source =
-      layerGrid || currentVolume
+      layer.grid || layer.volume
         ? querySourceOf({
-            format: layerFormat,
-            isVolume: currentVolume !== null,
-            isSynthetic: layerGrid?.isSynthetic === true,
-            elevation: currentVolume ? layerElevation : -1,
-            compressed: layerCompressed
+            format: layer.format,
+            isVolume: layer.volume !== null,
+            isSynthetic: layer.grid?.isSynthetic === true,
+            elevation: layer.volume ? layer.elevation : -1,
+            compressed: layer.compressed
           })
         : undefined;
 
@@ -504,55 +588,56 @@ export function useRadarScreen(screenId: number) {
 
   /**
    * 把解析结果应用为本屏图层（上传文件与本地文件夹文件共用）。
-   * RSTM 体数据按当前仰角层栅格化并保留仰角维度；单层数据清除仰角维度。
+   * RSTM 体数据按当前仰角层栅格化（Worker）并保留仰角维度；单层数据清除仰角维度。
    * @param data  解析结果（volume 或 grid）
    * @param label 数据来源文件名，写入屏头状态便于区分
+   * @param token 调用方的操作序号：栅格化 await 期间若已有更新的操作则丢弃结果
    */
-  function applyParsedData(data: ParsedRadarData, label: string): void {
+  async function applyParsedData(
+    data: ParsedRadarData,
+    label: string,
+    token: number
+  ): Promise<void> {
     const sc = screen.value;
     if (!sc || !map) return;
     const product = getProductByIdSafe(sc.productId);
 
     let grid: RadarGrid;
+    let volume: RstmVolume | null = null;
+    let elevIdx = -1;
     if (data.kind === 'volume') {
+      volume = data.volume;
       // 越界层号钳制到体数据实际层数（与 setScreenElevations 的钳制口径一致）
-      const elevIdx = Math.min(
-        Math.max(sc.elevationIndex, 0),
-        data.volume.elevations.length - 1
-      );
+      elevIdx = Math.min(Math.max(sc.elevationIndex, 0), data.volume.elevations.length - 1);
+      const field = fieldForProduct(product.id);
       // 当前层无有效数据时回退最低仰角层
       const g =
-        volumeToGrid(data.volume, elevIdx, fieldForProduct(product.id)) ??
-        volumeToGrid(data.volume, 0, fieldForProduct(product.id));
+        (await fetchVolumeGrid(data.volume, elevIdx, field)) ??
+        (await fetchVolumeGrid(data.volume, 0, field));
+      if (token !== refreshToken) return;
       if (!g) throw new UploadFileError('empty', '基数据体无有效数据（该文件可能已损坏）');
       grid = g;
-      currentVolume = data.volume;
-      layerElevation = elevIdx;
       setScreenElevations(screenId, data.volume.elevations);
     } else {
       grid = data.grid;
-      currentVolume = null;
-      layerElevation = -1;
       setScreenElevations(screenId, []);
     }
+    if (token !== refreshToken) return;
 
-    removeRadar(map, layer);
-    layerGrid = grid;
+    removeRadar(map, layer.qe);
     // 本地数据同样遵循本屏的色标范围（范围外渲染为透明）
-    layer = renderRadar(map, grid, product, sc.smooth, sc.valueRange ?? null);
-    layerTime = sc.time;
-    layerProductId = product.id;
-    layerThreshold = firstVisibleThreshold(product);
-    layerSmooth = sc.smooth;
-    layerRange = sc.valueRange ?? null;
+    commitLayer(map, layer, screenId, grid, product, {
+      time: sc.time,
+      smooth: sc.smooth,
+      range: sc.valueRange ?? null,
+      volume,
+      elevation: elevIdx
+    });
     // 数据区域可能与当前视野不同，重新定位到新数据范围
     fitToGrid(grid);
-    // 合成兜底的上传文件同样要挂警示：此前只有服务器取数路径提示“示意数据”，
-    // 上传路径完全静默，而 AGENTS.md 明确该标记禁止用于业务判断
-    setScreenSynthetic(screenId, grid.isSynthetic === true);
     // 与服务器取数同样记录格式：上传的 m4 / 拼图 / 基数据取值口径不同
-    layerFormat = data.format;
-    layerCompressed = /\.bz2$/i.test(label);
+    layer.format = data.format;
+    layer.compressed = /\.bz2$/i.test(label);
     // 状态栏同时显示文件名，便于多屏 / 多文件时区分数据来源
     setScreenStatus(screenId, uploadDataLabel(label));
   }
@@ -576,7 +661,8 @@ export function useRadarScreen(screenId: number) {
       setScreenStatus(screenId, STATUS.recognizing, 'busy');
       const data = await parseUploadedFile(file, sc.productId);
       if (token !== refreshToken) return;
-      applyParsedData(data, file.name);
+      await applyParsedData(data, file.name, token);
+      if (token !== refreshToken) return;
       setScreenLoading(screenId, false);
       // 合成兜底的文件虽然“识别成功”，画面却不是真实数据 → 用警告而不是成功提示。
       // grouping：重复上传同一文件时合并为一条（“1+”），不会叠成一列
@@ -640,7 +726,7 @@ export function useRadarScreen(screenId: number) {
         //   invalidateSize 会触发 QE 的 canvas resize（重建 framebuffer），
         //   但 GL 图层没有持续渲染循环，resize 后不会自动重绘，
         //   表现为“切屏后色斑消失，要拖动/缩放地图才出现”。
-        layer?.reinit();
+        layer.qe?.reinit();
       });
     });
     mapResizeObserver.observe(el);
@@ -665,13 +751,14 @@ export function useRadarScreen(screenId: number) {
     mapResizeObserver?.disconnect();
     mapResizeObserver = null;
 
-    removeRadar(map, layer);
+    removeRadar(map, layer.qe);
     if (map) unregisterMapLink(map);
     if (map && typeof map.remove === 'function') map.remove();
     map = null;
-    layer = null;
-    layerGrid = null;
-    currentVolume = null;
+    // 释放图层状态里的大对象引用（网格/体数据为共享缓存对象，这里只断引用）
+    layer.qe = null;
+    layer.grid = null;
+    layer.volume = null;
   });
 
   // 本屏 产品/时间/平滑开关/色标范围/仰角 变化 → 自动重渲染
